@@ -1,0 +1,46 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:440px;">
+  <div class="rs-card" style="margin-top:48px;">
+    <h2>Join Rideshare</h2>
+    <p style="color:var(--rs-text-soft);">Just your mobile number — no password, no OTP.</p>
+    <form id="rs-signup-form" autocomplete="off">
+      <div class="rs-field">
+        <label class="rs-label" for="full_name">Your name</label>
+        <input class="rs-input" id="full_name" name="full_name" required placeholder="Aarav Sharma">
+      </div>
+      <div class="rs-field">
+        <label class="rs-label" for="mobile">Mobile number</label>
+        <input class="rs-input" id="mobile" name="mobile" inputmode="numeric"
+               placeholder="9876543210" required>
+      </div>
+      <button class="rs-btn rs-btn-primary rs-btn-block" type="submit">Create account</button>
+    </form>
+    <p style="text-align:center; color:var(--rs-text-soft); margin-top:18px;">
+      Already have one? <a href="/login">Log in</a>
+    </p>
+  </div>
+</div>
+
+<script>
+frappe.ready(function () {
+  const form = document.getElementById("rs-signup-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const mobile = document.getElementById("mobile").value.trim();
+    const full_name = document.getElementById("full_name").value.trim();
+    if (!mobile || !full_name) return;
+    try {
+      const res = await rs.api("rideshare.api.auth.login_or_signup", {
+        mobile_no: mobile,
+        full_name: full_name,
+      });
+      rs.toast("Welcome to Rideshare!", "success");
+      setTimeout(() => { window.location.href = res.redirect_to || "/me"; }, 400);
+    } catch (err) {
+      rs.toast(err.message || "Signup failed", "error");
+    }
+  });
+});
+</script>
+{%- endblock -%}

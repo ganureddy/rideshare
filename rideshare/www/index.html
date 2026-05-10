@@ -1,0 +1,72 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<section class="rs-hero">
+  <div class="rs-container">
+    <h1>Your pick of rides at low prices</h1>
+    <p>Wherever you’re going, by bus or carpool — find your perfect ride among millions of trips.</p>
+
+    <form id="rs-home-search" class="rs-search-box" action="/rides" method="get" autocomplete="off">
+      <div class="rs-search-cell">
+        <label for="origin">From</label>
+        <input id="origin" name="origin" placeholder="Leaving from" required>
+      </div>
+      <div class="rs-search-cell">
+        <label for="destination">To</label>
+        <input id="destination" name="destination" placeholder="Going to" required>
+      </div>
+      <div class="rs-search-cell">
+        <label for="date">Date <span style="text-transform:none; color:var(--rs-text-soft); font-weight:500;">(any day)</span></label>
+        <input id="date" name="date" type="date">
+      </div>
+      <div class="rs-search-cell">
+        <label for="seats">Passengers</label>
+        <select id="seats" name="seats">
+          <option value="1">1 passenger</option>
+          <option value="2">2 passengers</option>
+          <option value="3">3 passengers</option>
+          <option value="4">4 passengers</option>
+        </select>
+      </div>
+      <button class="rs-btn rs-btn-primary rs-search-go" type="submit">Search</button>
+    </form>
+  </div>
+</section>
+
+<section class="rs-container" style="margin-top:48px;">
+  <div class="rs-row">
+    <div class="rs-card">
+      <h3>Save up to 75 % vs. trains and flights</h3>
+      <p style="color:var(--rs-text-soft);">Pay only what it costs to share fuel — drivers split costs, not profit from you.</p>
+    </div>
+    <div class="rs-card">
+      <h3>Drivers you can trust</h3>
+      <p style="color:var(--rs-text-soft);">We verify IDs and licenses. See ratings and reviews before you book.</p>
+    </div>
+    <div class="rs-card">
+      <h3>Hassle-free booking</h3>
+      <p style="color:var(--rs-text-soft);">Book in seconds with secure payment. Free cancellation up to 24 h before.</p>
+    </div>
+  </div>
+</section>
+
+<script>
+frappe.ready(function () {
+  const origin = document.getElementById("origin");
+  const destination = document.getElementById("destination");
+  rs.cityAutocomplete(origin);
+  rs.cityAutocomplete(destination);
+  // Date is intentionally left empty so that all upcoming rides on the
+  // route are shown.  Users can pick a specific day to narrow down.
+
+  // Strip empty params before submit so the URL stays clean and the
+  // /rides page doesn't see ``date=`` (which would re-trigger today's filter).
+  document.getElementById("rs-home-search").addEventListener("submit", function (e) {
+    Array.from(this.elements).forEach((el) => {
+      if (el.name && (el.value === "" || el.value == null)) {
+        el.disabled = true;
+      }
+    });
+  });
+});
+</script>
+{%- endblock -%}

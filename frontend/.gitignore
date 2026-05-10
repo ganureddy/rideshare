@@ -1,0 +1,21 @@
+node_modules/
+.expo/
+dist/
+web-build/
+.DS_Store
+*.log
+
+# Local env
+.env
+.env.local
+
+# EAS
+play-service-account.json
+
+# Native
+ios/Pods/
+ios/build/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

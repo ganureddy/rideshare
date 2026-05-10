@@ -1,0 +1,57 @@
+{%- extends "templates/web.html" -%}
+
+{# Shared chrome for every Rideshare public page. #}
+
+{%- block title -%}{{ title or "Rideshare" }} | Rideshare{%- endblock -%}
+
+{%- block page_content -%}
+<div class="rs-shell">
+  <header class="rs-nav">
+    <div class="rs-nav-inner">
+      <a class="rs-logo" href="/"><span class="rs-logo-dot"></span> rideshare</a>
+      <div class="rs-nav-links">
+        <a href="/rides">Search</a>
+        {%- if frappe.session.user != "Guest" -%}
+        <a href="/me/trips">My Trips</a>
+        <a href="/publish">Publish a ride</a>
+        {%- else -%}
+        <a href="/publish">Publish a ride</a>
+        {%- endif -%}
+      </div>
+      <div class="rs-nav-spacer"></div>
+      <div class="rs-nav-cta">
+        {%- if frappe.session.user == "Guest" -%}
+          <a class="rs-btn rs-btn-ghost" href="/login">Login</a>
+          <a class="rs-btn rs-btn-primary" href="/signup">Sign up</a>
+        {%- else -%}
+          <a class="rs-btn rs-btn-ghost" href="/me">Hi, {{ first_name or "you" }}</a>
+          <a class="rs-btn rs-btn-outline" href="/api/method/rideshare.api.auth.logout">Logout</a>
+        {%- endif -%}
+      </div>
+    </div>
+  </header>
+
+  <main class="rs-content">
+    {%- block rs_body -%}{%- endblock -%}
+  </main>
+
+  <footer class="rs-footer">
+    <div class="rs-container">
+      Rideshare — community-powered intercity carpooling.
+      &nbsp;·&nbsp; <a href="/rides">Find a ride</a>
+      &nbsp;·&nbsp; <a href="/publish">Offer a ride</a>
+    </div>
+  </footer>
+</div>
+{%- endblock -%}
+
+{%- block style -%}
+{{ super() }}
+<style>
+  body.web-page-content { background: var(--rs-bg-soft) !important; }
+  body { background: var(--rs-bg-soft); }
+  /* Hide Frappe's default portal navbar/footer when present. */
+  .navbar, .web-footer, .website-footer { display: none !important; }
+  .page_content, .web-page-content { padding-top: 0 !important; padding-bottom: 0 !important; }
+</style>
+{%- endblock -%}

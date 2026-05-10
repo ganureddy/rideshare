@@ -1,0 +1,195 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:720px;">
+  <h2>Publish a ride</h2>
+  <p style="color:var(--rs-text-soft);">Five quick steps. Money is held safely until 24 h after arrival.</p>
+
+  <div class="rs-steps">
+    <div class="rs-step active" data-step="1"></div>
+    <div class="rs-step" data-step="2"></div>
+    <div class="rs-step" data-step="3"></div>
+    <div class="rs-step" data-step="4"></div>
+    <div class="rs-step" data-step="5"></div>
+  </div>
+
+  <div class="rs-card">
+    <section data-pane="1">
+      <h3>From & To</h3>
+      <div class="rs-row">
+        <div class="rs-field">
+          <label class="rs-label">Origin city</label>
+          <input class="rs-input" id="origin_city" list="city-list" placeholder="Delhi">
+          <input id="origin_address" class="rs-input" placeholder="Pickup address (optional)" style="margin-top:8px;">
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Destination city</label>
+          <input class="rs-input" id="destination_city" list="city-list" placeholder="Jaipur">
+          <input id="destination_address" class="rs-input" placeholder="Drop address (optional)" style="margin-top:8px;">
+        </div>
+      </div>
+      <datalist id="city-list"></datalist>
+    </section>
+
+    <section data-pane="2" hidden>
+      <h3>When?</h3>
+      <div class="rs-field">
+        <label class="rs-label">Departure</label>
+        <input class="rs-input" id="departure_datetime" type="datetime-local">
+      </div>
+    </section>
+
+    <section data-pane="3" hidden>
+      <h3>Vehicle & seats</h3>
+      <div class="rs-field">
+        <label class="rs-label">Car</label>
+        <select class="rs-select" id="vehicle"></select>
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Seats to offer</label>
+        <select class="rs-select" id="seats_total">
+          {%- for n in [1,2,3,4,5,6,7] -%}<option value="{{ n }}" {{ "selected" if n == 3 else "" }}>{{ n }}</option>{%- endfor -%}
+        </select>
+      </div>
+    </section>
+
+    <section data-pane="4" hidden>
+      <h3>Price</h3>
+      <div id="price-suggest" style="background:var(--rs-bg-soft); padding:12px; border-radius:12px; margin-bottom:12px; font-size:14px; color:var(--rs-text-soft);">
+        Calculating fair-price band…
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Price per seat (₹)</label>
+        <input class="rs-input" id="price_per_seat" type="number" min="0" step="50">
+      </div>
+    </section>
+
+    <section data-pane="5" hidden>
+      <h3>Preferences</h3>
+      <div class="rs-checkbox-row"><input type="checkbox" id="instant_booking"><label for="instant_booking">Instant booking (passengers don't need approval)</label></div>
+      <div class="rs-checkbox-row"><input type="checkbox" id="women_only"><label for="women_only">Women only</label></div>
+      <div class="rs-checkbox-row"><input type="checkbox" id="max_2_back" checked><label for="max_2_back">Max 2 in back seat</label></div>
+      <div class="rs-field">
+        <label class="rs-label">Cancellation policy</label>
+        <select class="rs-select" id="cancellation_policy">
+          <option value="Flexible">Flexible — full refund up to 2h before</option>
+          <option value="Moderate" selected>Moderate — full refund up to 24h before</option>
+          <option value="Strict">Strict — full refund up to 48h before</option>
+        </select>
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Description (optional)</label>
+        <textarea class="rs-textarea" id="description" rows="3" placeholder="What should passengers expect?"></textarea>
+      </div>
+    </section>
+
+    <div style="display:flex; justify-content:space-between; margin-top:18px;">
+      <button id="rs-back" class="rs-btn rs-btn-ghost" hidden>← Back</button>
+      <div></div>
+      <button id="rs-next" class="rs-btn rs-btn-primary">Next →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+window.CITIES = {{ cities_json | safe }};
+window.VEHICLES = {{ vehicles_json | safe }};
+</script>
+
+<script>
+frappe.ready(function () {
+  let step = 1;
+  const total = 5;
+  const cityById = {};
+  window.CITIES.forEach((c) => { cityById[c.label] = c; });
+  const datalist = document.getElementById("city-list");
+  window.CITIES.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.label;
+    datalist.appendChild(opt);
+  });
+  rs.cityAutocomplete(document.getElementById("origin_city"));
+  rs.cityAutocomplete(document.getElementById("destination_city"));
+
+  const vehicleSelect = document.getElementById("vehicle");
+  if (!window.VEHICLES.length) {
+    vehicleSelect.innerHTML = '<option value="">No vehicles — go to "Become a driver" first</option>';
+  } else {
+    window.VEHICLES.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v.name;
+      opt.textContent = `${v.year || ''} ${v.make} ${v.model}`.trim();
+      vehicleSelect.appendChild(opt);
+    });
+  }
+
+  function show() {
+    document.querySelectorAll(".rs-step").forEach((s) => {
+      s.classList.toggle("active", +s.dataset.step <= step);
+    });
+    document.querySelectorAll("[data-pane]").forEach((p) => {
+      p.hidden = +p.dataset.pane !== step;
+    });
+    document.getElementById("rs-back").hidden = step === 1;
+    document.getElementById("rs-next").textContent = step === total ? "Publish" : "Next →";
+
+    if (step === 4) updatePriceSuggestion();
+  }
+
+  async function updatePriceSuggestion() {
+    const o = cityById[document.getElementById("origin_city").value];
+    const d = cityById[document.getElementById("destination_city").value];
+    const box = document.getElementById("price-suggest");
+    if (!o || !d) {
+      box.textContent = "Pick cities first to see fair-price band.";
+      return;
+    }
+    try {
+      const r = await rs.api("rideshare.api.rides.suggest_price", {
+        origin_lat: o.lat, origin_lng: o.lng,
+        destination_lat: d.lat, destination_lng: d.lng,
+      });
+      box.innerHTML = `🛣️ ${r.distance_km} km · ~${Math.round(r.duration_minutes/60*10)/10}h<br>
+        <strong>Fair price:</strong> ₹${r.min_price} – ₹${r.max_price}.
+        Suggested: <strong>₹${r.suggested_price}</strong>.`;
+      const input = document.getElementById("price_per_seat");
+      if (!input.value) input.value = r.suggested_price;
+    } catch (err) { box.textContent = "Could not estimate price."; }
+  }
+
+  document.getElementById("rs-back").addEventListener("click", () => { step = Math.max(1, step - 1); show(); });
+  document.getElementById("rs-next").addEventListener("click", async () => {
+    if (step < total) { step++; show(); return; }
+    const o = cityById[document.getElementById("origin_city").value];
+    const d = cityById[document.getElementById("destination_city").value];
+    if (!o || !d) return rs.toast("Please pick valid cities", "error");
+    const payload = {
+      vehicle: document.getElementById("vehicle").value,
+      origin_city: o.id, origin_address: document.getElementById("origin_address").value,
+      origin_lat: o.lat, origin_lng: o.lng,
+      destination_city: d.id, destination_address: document.getElementById("destination_address").value,
+      destination_lat: d.lat, destination_lng: d.lng,
+      departure_datetime: document.getElementById("departure_datetime").value.replace("T", " "),
+      seats_total: +document.getElementById("seats_total").value,
+      price_per_seat: +document.getElementById("price_per_seat").value,
+      instant_booking: document.getElementById("instant_booking").checked,
+      women_only: document.getElementById("women_only").checked,
+      max_2_back: document.getElementById("max_2_back").checked,
+      cancellation_policy: document.getElementById("cancellation_policy").value,
+      description: document.getElementById("description").value,
+      waypoints: [],
+    };
+    document.getElementById("rs-next").disabled = true;
+    try {
+      const res = await rs.api("rideshare.api.rides.publish_ride", { payload: JSON.stringify(payload) });
+      rs.toast("Ride published! ✨", "success");
+      setTimeout(() => { window.location.href = "/rides/" + res.name; }, 800);
+    } catch (err) {
+      rs.toast(err.message || "Could not publish", "error");
+      document.getElementById("rs-next").disabled = false;
+    }
+  });
+
+  show();
+});
+</script>
+{%- endblock -%}

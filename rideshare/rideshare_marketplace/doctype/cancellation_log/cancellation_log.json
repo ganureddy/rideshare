@@ -1,0 +1,44 @@
+{
+ "actions": [],
+ "autoname": "format:CXL-{######}",
+ "creation": "2026-04-26 19:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "booking",
+  "cancelled_by",
+  "cancelled_on",
+  "column_break_1",
+  "refund_percentage",
+  "refund_amount",
+  "reason"
+ ],
+ "fields": [
+  {"fieldname": "booking", "fieldtype": "Link", "label": "Booking", "options": "Booking", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "cancelled_by", "fieldtype": "Link", "label": "Cancelled By", "options": "User", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "cancelled_on", "fieldtype": "Datetime", "label": "Cancelled On", "in_list_view": 1, "default": "Now"},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {"fieldname": "refund_percentage", "fieldtype": "Int", "label": "Refund %", "in_list_view": 1, "default": "0"},
+  {"fieldname": "refund_amount", "fieldtype": "Currency", "label": "Refund Amount", "in_list_view": 1},
+  {"fieldname": "reason", "fieldtype": "Small Text", "label": "Reason"}
+ ],
+ "links": [],
+ "modified": "2026-04-26 19:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Rideshare Marketplace",
+ "name": "Cancellation Log",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1},
+  {"create": 1, "read": 1, "role": "Rideshare Admin", "write": 1, "report": 1, "delete": 1, "print": 1, "share": 1},
+  {"read": 1, "role": "Support Agent", "write": 1, "create": 1},
+  {"read": 1, "role": "Rider"},
+  {"read": 1, "role": "Driver"},
+  {"read": 1, "role": "Verified Driver"}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

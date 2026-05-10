@@ -1,0 +1,98 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:840px;">
+  <h2>My trips</h2>
+  <p style="color:var(--rs-text-soft);">Your bookings as a passenger and rides you publish as a driver.</p>
+
+  <h3 style="margin-top:24px;">As a passenger</h3>
+  <div id="rs-bookings" style="display:flex; flex-direction:column; gap:10px;"></div>
+
+  <h3 style="margin-top:32px;">As a driver</h3>
+  <div id="rs-published" style="display:flex; flex-direction:column; gap:10px;"></div>
+</div>
+
+<script>
+frappe.ready(async function () {
+  const bookings = await rs.api("rideshare.api.bookings.my_bookings");
+  const bbox = document.getElementById("rs-bookings");
+  if (!bookings.length) {
+    bbox.innerHTML = '<div class="rs-empty rs-card"><div class="ico">🎟️</div>No bookings yet. <a href="/rides">Find a ride</a></div>';
+  } else {
+    bookings.forEach((b) => {
+      const div = document.createElement("div");
+      div.className = "rs-card";
+      div.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div>
+            <div style="font-weight:700;">${b.origin_city} → ${b.destination_city}</div>
+            <div style="color:var(--rs-text-soft); font-size:13px;">${rs.fmtDateTime(b.departure_datetime)} · ${b.seats_booked} seat(s) · code <code>${b.booking_code}</code></div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-weight:700;">${rs.fmtMoney(b.total_amount, b.currency)}</div>
+            <span class="rs-chip ${b.status === 'Confirmed' ? 'rs-chip-success' : (b.status === 'Cancelled' ? 'rs-chip-danger' : 'rs-chip-warn')}">${b.status}</span>
+            <span class="rs-chip rs-chip-primary">${b.payment_status}</span>
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <a class="rs-btn rs-btn-outline" href="/rides/${b.ride}">View ride</a>
+          ${b.status === 'Confirmed' || b.status === 'Pending' ?
+            `<button class="rs-btn rs-btn-ghost" data-cancel="${b.name}">Cancel booking</button>` : ''}
+        </div>
+      `;
+      bbox.appendChild(div);
+    });
+    bbox.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-cancel]");
+      if (!btn) return;
+      if (!confirm("Cancel this booking? Refund follows the ride's cancellation policy.")) return;
+      btn.disabled = true;
+      try {
+        const res = await rs.api("rideshare.api.bookings.cancel_booking", { booking: btn.dataset.cancel });
+        rs.toast(`Cancelled — refund ${res.refund_percentage}% (₹${res.refund_amount})`, "success");
+        setTimeout(() => location.reload(), 800);
+      } catch (err) { rs.toast(err.message || "Failed", "error"); btn.disabled = false; }
+    });
+  }
+
+  const rides = await rs.api("rideshare.api.rides.my_rides");
+  const pbox = document.getElementById("rs-published");
+  if (!rides.length) {
+    pbox.innerHTML = '<div class="rs-empty rs-card"><div class="ico">🚗</div>No rides published. <a href="/publish">Publish your first ride</a></div>';
+  } else {
+    rides.forEach((r) => {
+      const div = document.createElement("div");
+      div.className = "rs-card";
+      div.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div>
+            <div style="font-weight:700;">${r.origin_city} → ${r.destination_city}</div>
+            <div style="color:var(--rs-text-soft); font-size:13px;">${rs.fmtDateTime(r.departure_datetime)} · ${r.seats_available}/${r.seats_total} seats</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-weight:700;">${rs.fmtMoney(r.price_per_seat)}/seat</div>
+            <span class="rs-chip ${r.status === 'Published' ? 'rs-chip-success' : 'rs-chip'}">${r.status}</span>
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <a class="rs-btn rs-btn-outline" href="/rides/${r.name}">View public</a>
+          ${(r.status === 'Published' || r.status === 'Full') ?
+            `<button class="rs-btn rs-btn-ghost" data-cancel-ride="${r.name}">Cancel ride</button>` : ''}
+        </div>
+      `;
+      pbox.appendChild(div);
+    });
+    pbox.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-cancel-ride]");
+      if (!btn) return;
+      if (!confirm("Cancel this ride? Confirmed passengers will get full refunds.")) return;
+      btn.disabled = true;
+      try {
+        await rs.api("rideshare.api.rides.cancel_ride", { ride: btn.dataset.cancelRide });
+        rs.toast("Ride cancelled", "success");
+        setTimeout(() => location.reload(), 800);
+      } catch (err) { rs.toast(err.message || "Failed", "error"); btn.disabled = false; }
+    });
+  }
+});
+</script>
+{%- endblock -%}

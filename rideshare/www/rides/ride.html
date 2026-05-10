@@ -1,0 +1,201 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:880px;">
+  <a href="/rides" style="display:inline-block; margin-bottom:14px;">← Back to results</a>
+
+  <div class="rs-row" style="align-items:flex-start;">
+    <div style="flex:2; min-width:0;">
+      <div class="rs-card">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px;">
+          <div>
+            <h2 style="margin:0;">{{ ride.origin_city }} → {{ ride.destination_city }}</h2>
+            <p style="color:var(--rs-text-soft); margin:6px 0 0;">
+              {{ frappe.utils.format_datetime(ride.departure_datetime, "EEE d MMM, h:mm a") }}
+              {%- if ride.duration_minutes -%}
+                · ~{{ (ride.duration_minutes / 60) | round(1) }}h
+              {%- endif -%}
+              {%- if ride.distance_km -%}
+                · {{ ride.distance_km }} km
+              {%- endif -%}
+            </p>
+          </div>
+          <div class="rs-ride-price" style="text-align:right;">
+            <div class="p">₹{{ ride.price_per_seat | int }}</div>
+            <div class="s">/ seat · {{ ride.seats_available }} left</div>
+          </div>
+        </div>
+
+        <div style="margin-top:24px;">
+          <div class="rs-timeline">
+            <div class="rs-tl-item">
+              <div class="city">{{ ride.origin_city }}</div>
+              {%- if ride.origin_address -%}
+              <div class="addr">{{ ride.origin_address }}</div>
+              {%- endif -%}
+            </div>
+            {%- for w in ride.waypoints or [] -%}
+            <div class="rs-tl-item">
+              <div class="city">{{ w.city }}</div>
+              {%- if w.pickup_offset_minutes -%}
+              <div class="addr">+{{ w.pickup_offset_minutes }} min</div>
+              {%- endif -%}
+            </div>
+            {%- endfor -%}
+            <div class="rs-tl-item">
+              <div class="city">{{ ride.destination_city }}</div>
+              {%- if ride.destination_address -%}
+              <div class="addr">{{ ride.destination_address }}</div>
+              {%- endif -%}
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:18px;">
+          {%- if ride.instant_booking -%}<span class="rs-chip rs-chip-primary">⚡ Instant booking</span>{%- endif -%}
+          {%- if ride.women_only -%} <span class="rs-chip rs-chip-warn">Women only</span>{%- endif -%}
+          {%- if ride.max_2_back -%} <span class="rs-chip">Max 2 in back</span>{%- endif -%}
+          <span class="rs-chip">{{ ride.cancellation_policy or "Moderate" }} cancel</span>
+        </div>
+
+        {%- if ride.description -%}
+        <div style="margin-top:18px; color:var(--rs-text-soft);">
+          <strong style="color:var(--rs-text);">From the driver:</strong><br>
+          {{ ride.description }}
+        </div>
+        {%- endif -%}
+
+        <div id="rs-map" style="height:280px; margin-top:18px; border-radius:12px; overflow:hidden; border:1px solid var(--rs-border);"></div>
+      </div>
+    </div>
+
+    <aside style="flex:1; min-width:280px;">
+      <div class="rs-card">
+        <h3 style="margin:0 0 12px;">Driver</h3>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div class="rs-avatar" style="width:56px; height:56px; font-size:18px;">
+            {{ (driver.name or "D")[0] | upper }}
+          </div>
+          <div>
+            <div style="font-weight:700;">{{ driver.name }}</div>
+            <div style="color:var(--rs-text-soft); font-size:13px;">
+              {%- if driver.avg_rating -%}
+              ★ {{ driver.avg_rating }}
+              {%- else -%}
+              New driver
+              {%- endif -%}
+              · {{ driver.total_trips }} trips
+            </div>
+          </div>
+        </div>
+        {%- if driver.is_verified -%}
+        <div style="margin-top:12px;">
+          <span class="rs-chip rs-chip-success">✓ Verified</span>
+        </div>
+        {%- endif -%}
+
+        <div style="margin-top:16px; font-size:13px; color:var(--rs-text-soft);">
+          {%- if vehicle.make -%}
+          <strong style="color:var(--rs-text);">Car:</strong>
+          {{ vehicle.year }} {{ vehicle.make }} {{ vehicle.model }}{% if vehicle.color %} · {{ vehicle.color }}{% endif %}
+          <br>
+          {%- endif -%}
+          <strong style="color:var(--rs-text);">Music:</strong> {{ driver.preferences_music }} ·
+          <strong style="color:var(--rs-text);">Chat:</strong> {{ driver.preferences_chat }}<br>
+          <strong style="color:var(--rs-text);">Smoking:</strong> {{ "OK" if driver.preferences_smoking else "No" }} ·
+          <strong style="color:var(--rs-text);">Pets:</strong> {{ "OK" if driver.preferences_pets else "No" }}
+        </div>
+
+        <a href="/u/{{ driver.user.split('@')[0] }}" style="display:inline-block; margin-top:12px;">View driver profile →</a>
+      </div>
+
+      <div class="rs-card" style="margin-top:14px;">
+        <h3 style="margin:0 0 12px;">Book this ride</h3>
+        <div class="rs-field">
+          <label class="rs-label">Seats</label>
+          <select id="seats" class="rs-select">
+            {%- for n in range(1, (ride.seats_available or 0) + 1) -%}
+            <option value="{{ n }}">{{ n }} seat{{ "s" if n > 1 else "" }} · ₹{{ (ride.price_per_seat * n) | int }}</option>
+            {%- endfor -%}
+          </select>
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Message to driver (optional)</label>
+          <textarea id="message" class="rs-textarea" rows="3" placeholder="Hi! I'd love to join your ride."></textarea>
+        </div>
+        <button id="rs-book-btn" class="rs-btn rs-btn-primary rs-btn-block" {% if (ride.seats_available or 0) <= 0 %}disabled{% endif %}>
+          {% if (ride.seats_available or 0) <= 0 %}Sold out{% else %}Book now{% endif %}
+        </button>
+        <p style="font-size:12px; color:var(--rs-text-soft); margin-top:10px; text-align:center;">
+          Money is held safely until 24 h after arrival.
+        </p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+window.RIDE = {{ ride_json | safe }};
+</script>
+
+<script>
+frappe.ready(function () {
+  const ride = window.RIDE;
+
+  // Leaflet map preview
+  if (window.L && document.getElementById("rs-map")) {
+    const map = L.map("rs-map", { zoomControl: true, scrollWheelZoom: false });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap",
+      maxZoom: 17,
+    }).addTo(map);
+    const points = [];
+    if (ride.origin_lat && ride.origin_lng) points.push([ride.origin_lat, ride.origin_lng]);
+    (ride.waypoints || []).forEach((w) => { if (w.lat && w.lng) points.push([w.lat, w.lng]); });
+    if (ride.destination_lat && ride.destination_lng)
+      points.push([ride.destination_lat, ride.destination_lng]);
+
+    if (points.length) {
+      points.forEach((p, i) => {
+        const lbl = i === 0 ? "Start" : (i === points.length - 1 ? "End" : "Stop");
+        L.marker(p).addTo(map).bindTooltip(lbl);
+      });
+      L.polyline(points, { color: "#00aff5", weight: 4 }).addTo(map);
+      map.fitBounds(points, { padding: [40, 40] });
+    } else {
+      map.setView([22.5, 78.9], 5);
+    }
+  }
+
+  document.getElementById("rs-book-btn").addEventListener("click", async function () {
+    if (!rs.requireLogin()) return;
+    const seats = +document.getElementById("seats").value || 1;
+    const message = document.getElementById("message").value;
+    this.disabled = true;
+    this.textContent = "Reserving…";
+    try {
+      const r1 = await rs.api("rideshare.api.bookings.create_booking", {
+        ride: ride.name,
+        seats: seats,
+        message: message,
+      });
+      // DEMO gateway: auto-confirm immediately. Real Razorpay would launch checkout here.
+      const r2 = await rs.api("rideshare.api.bookings.confirm_payment", {
+        booking: r1.booking,
+        gateway_order_id: r1.order_id,
+        gateway_payment_id: "pay_demo_" + Math.random().toString(36).slice(2, 12),
+        gateway_signature: "demo_sig",
+      });
+      rs.toast("Booked! Code: " + (r2.booking_code || r1.booking_code), "success");
+      setTimeout(() => { window.location.href = "/me/trips"; }, 800);
+    } catch (err) {
+      rs.toast(err.message || "Booking failed", "error");
+      this.disabled = false;
+      this.textContent = "Book now";
+    }
+  });
+});
+</script>
+{%- endblock -%}

@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Rideshare",
+    "slug": "rideshare",
+    "scheme": "rideshare",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#00aff5"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.rideshare.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "We use your location to show pickup points and live driver position.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Drivers share their position with passengers during a trip.",
+        "UIBackgroundModes": ["location"]
+      }
+    },
+    "android": {
+      "package": "com.rideshare.app",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#00aff5"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Rideshare to use your location for live trip tracking.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
+    }
+  }
+}

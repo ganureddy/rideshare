@@ -1,0 +1,26 @@
+{
+ "actions": [],
+ "creation": "2026-04-26 19:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["sequence", "city", "lat", "lng", "pickup_offset_minutes"],
+ "fields": [
+  {"fieldname": "sequence", "fieldtype": "Int", "label": "#", "in_list_view": 1, "reqd": 1},
+  {"fieldname": "city", "fieldtype": "Link", "label": "City", "options": "City", "in_list_view": 1, "reqd": 1},
+  {"fieldname": "lat", "fieldtype": "Float", "label": "Latitude", "precision": "6"},
+  {"fieldname": "lng", "fieldtype": "Float", "label": "Longitude", "precision": "6"},
+  {"fieldname": "pickup_offset_minutes", "fieldtype": "Int", "label": "Pickup +min", "in_list_view": 1, "default": "0"}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-26 19:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Rideshare Marketplace",
+ "name": "Ride Waypoint",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "sequence",
+ "sort_order": "ASC",
+ "states": []
+}

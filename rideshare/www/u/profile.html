@@ -1,0 +1,61 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:720px;">
+  <a href="javascript:history.back()" style="display:inline-block; margin-bottom:14px;">← Back</a>
+
+  <div class="rs-card">
+    <div style="display:flex; gap:18px; align-items:center;">
+      <div class="rs-avatar" style="width:72px; height:72px; font-size:24px;">
+        {{ (driver.full_name or "D")[0] | upper }}
+      </div>
+      <div>
+        <h2 style="margin:0;">{{ driver.full_name }}</h2>
+        <div style="color:var(--rs-text-soft);">
+          {%- if driver.avg_rating -%}★ {{ driver.avg_rating }}{%- else -%}New driver{%- endif -%}
+          · {{ driver.total_trips }} trips
+          {%- if driver.is_verified -%}
+          · <span class="rs-chip rs-chip-success">✓ Verified</span>
+          {%- endif -%}
+        </div>
+      </div>
+    </div>
+
+    {%- if driver.bio -%}
+    <p style="margin-top:16px;">{{ driver.bio }}</p>
+    {%- endif -%}
+
+    <h3 style="margin-top:24px;">Travel preferences</h3>
+    <p style="color:var(--rs-text-soft);">
+      <strong style="color:var(--rs-text);">Music:</strong> {{ driver.preferences_music }} ·
+      <strong style="color:var(--rs-text);">Chat:</strong> {{ driver.preferences_chat }}<br>
+      <strong style="color:var(--rs-text);">Smoking:</strong> {{ "OK" if driver.preferences_smoking else "No" }} ·
+      <strong style="color:var(--rs-text);">Pets:</strong> {{ "OK" if driver.preferences_pets else "No" }}
+    </p>
+
+    {%- if upcoming -%}
+    <h3 style="margin-top:24px;">Upcoming rides</h3>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      {%- for r in upcoming -%}
+      <a class="rs-ride-card" href="/rides/{{ r.name }}" style="text-decoration:none; color:inherit;">
+        <div class="rs-ride-time">
+          <div class="t">{{ frappe.utils.format_datetime(r.departure_datetime, "h:mm a") }}</div>
+          <div class="d">{{ frappe.utils.format_date(r.departure_datetime, "EEE d MMM") }}</div>
+        </div>
+        <div class="rs-ride-route">
+          <div class="rs-route-line">
+            <span>{{ r.origin_city }}</span>
+            <span class="arr">→</span>
+            <span>{{ r.destination_city }}</span>
+          </div>
+          <div class="rs-ride-meta">{{ r.seats_available }}/{{ r.seats_total }} seats</div>
+        </div>
+        <div class="rs-ride-price">
+          <div class="p">₹{{ r.price_per_seat | int }}</div><div class="s">/ seat</div>
+        </div>
+      </a>
+      {%- endfor -%}
+    </div>
+    {%- endif -%}
+  </div>
+</div>
+{%- endblock -%}

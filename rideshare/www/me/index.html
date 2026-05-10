@@ -1,0 +1,28 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:720px;">
+  <h2>Hi, {{ first_name or "there" }} 👋</h2>
+  <p style="color:var(--rs-text-soft);">Welcome to your dashboard.</p>
+
+  <div class="rs-row" style="align-items:stretch;">
+    <a class="rs-card" href="/me/trips" style="text-decoration:none; color:inherit;">
+      <h3>🎒 My trips</h3>
+      <p style="color:var(--rs-text-soft); margin:4px 0 0;">See bookings + cancel.</p>
+    </a>
+    <a class="rs-card" href="/publish" style="text-decoration:none; color:inherit;">
+      <h3>🚗 Publish a ride</h3>
+      <p style="color:var(--rs-text-soft); margin:4px 0 0;">Offer seats, earn back fuel.</p>
+    </a>
+    <a class="rs-card" href="/become-driver" style="text-decoration:none; color:inherit;">
+      <h3>🪪 Driver profile</h3>
+      <p style="color:var(--rs-text-soft); margin:4px 0 0;">{{ "Verified" if is_verified else "Get verified" }}</p>
+    </a>
+  </div>
+
+  <div class="rs-card" style="margin-top:18px;">
+    <h3>My account</h3>
+    <p style="margin:4px 0; color:var(--rs-text-soft);"><strong style="color:var(--rs-text);">Mobile:</strong> {{ mobile_no }}</p>
+    <p style="margin:4px 0; color:var(--rs-text-soft);"><strong style="color:var(--rs-text);">Roles:</strong> {{ roles | join(", ") }}</p>
+  </div>
+</div>
+{%- endblock -%}

@@ -1,0 +1,44 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:440px;">
+  <div class="rs-card" style="margin-top:48px;">
+    <div class="rs-card-h" style="flex-direction:column; align-items:flex-start;">
+      <h2 style="margin:0;">Welcome back</h2>
+      <p style="color:var(--rs-text-soft); margin:6px 0 0;">Enter your mobile number to continue.</p>
+    </div>
+
+    <form id="rs-login-form" autocomplete="off">
+      <div class="rs-field">
+        <label class="rs-label" for="mobile">Mobile number</label>
+        <input class="rs-input" id="mobile" name="mobile" inputmode="numeric"
+               placeholder="9876543210" required>
+      </div>
+      <button class="rs-btn rs-btn-primary rs-btn-block" type="submit">Continue</button>
+    </form>
+
+    <p style="text-align:center; color:var(--rs-text-soft); margin-top:18px;">
+      No account yet? <a href="/signup">Sign up</a>
+    </p>
+  </div>
+</div>
+
+<script>
+frappe.ready(function () {
+  const form = document.getElementById("rs-login-form");
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get("next") || "/me";
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const mobile = document.getElementById("mobile").value.trim();
+    if (!mobile) return;
+    try {
+      const res = await rs.api("rideshare.api.auth.login_or_signup", { mobile_no: mobile });
+      rs.toast(res.is_new ? "Account created — welcome!" : "Logged in", "success");
+      setTimeout(() => { window.location.href = next; }, 400);
+    } catch (err) {
+      rs.toast(err.message || "Login failed", "error");
+    }
+  });
+});
+</script>
+{%- endblock -%}

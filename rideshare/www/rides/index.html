@@ -1,0 +1,191 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container">
+  <div class="rs-card" style="margin-bottom:18px; padding:14px 18px;">
+    <form id="rs-search-form" class="rs-row" autocomplete="off">
+      <div class="rs-field" style="flex:1.5;">
+        <label class="rs-label">From</label>
+        <input class="rs-input" id="origin" name="origin" value="{{ origin or '' }}" placeholder="From">
+      </div>
+      <div class="rs-field" style="flex:1.5;">
+        <label class="rs-label">To</label>
+        <input class="rs-input" id="destination" name="destination" value="{{ destination or '' }}" placeholder="To">
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Date <span style="text-transform:none; color:var(--rs-text-soft); font-weight:400;">(any day)</span></label>
+        <input class="rs-input" id="date" name="date" type="date" value="{{ date or '' }}">
+      </div>
+      <div class="rs-field" style="flex:0.6;">
+        <label class="rs-label">Seats</label>
+        <select class="rs-select" id="seats" name="seats">
+          {%- for n in [1,2,3,4] -%}
+          <option value="{{ n }}" {% if seats == n %}selected{% endif %}>{{ n }}</option>
+          {%- endfor -%}
+        </select>
+      </div>
+      <div class="rs-field" style="flex:0.7; align-self:flex-end;">
+        <button class="rs-btn rs-btn-primary rs-btn-block" type="submit">Search</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="rs-row" style="align-items:flex-start;">
+    <aside class="rs-card" style="flex:0 0 260px;">
+      <h3 style="margin:0 0 12px;">Filters</h3>
+      <div class="rs-field">
+        <label class="rs-label">Sort</label>
+        <select id="sort" class="rs-select">
+          <option value="departure">Departure (earliest)</option>
+          <option value="price_asc">Price (low to high)</option>
+          <option value="price_desc">Price (high to low)</option>
+          <option value="duration">Duration</option>
+        </select>
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Max price (₹)</label>
+        <input class="rs-input" id="max_price" type="number" min="0" step="50" placeholder="No limit">
+      </div>
+      <div class="rs-checkbox-row">
+        <input type="checkbox" id="instant_booking">
+        <label for="instant_booking">Instant booking</label>
+      </div>
+      <div class="rs-checkbox-row">
+        <input type="checkbox" id="women_only">
+        <label for="women_only">Women only</label>
+      </div>
+    </aside>
+
+    <div style="flex:1; min-width:0;">
+      <div id="rs-results" style="display:flex; flex-direction:column; gap:12px;"></div>
+      <div id="rs-results-meta" style="margin:14px 4px; color:var(--rs-text-soft); font-size:14px;"></div>
+    </div>
+  </div>
+</div>
+
+<template id="rs-card-tpl">
+  <a class="rs-ride-card">
+    <div class="rs-ride-time"><div class="t"></div><div class="d"></div></div>
+    <div class="rs-ride-route">
+      <div class="rs-route-line">
+        <span class="from"></span>
+        <span class="arr">→</span>
+        <span class="to"></span>
+      </div>
+      <div class="rs-ride-meta"></div>
+      <div class="rs-ride-meta tags"></div>
+    </div>
+    <div class="rs-ride-driver">
+      <div class="rs-avatar"></div>
+      <div>
+        <div class="rs-driver-name"></div>
+        <div class="rs-driver-rating"></div>
+      </div>
+    </div>
+    <div class="rs-ride-price">
+      <div class="p"></div>
+      <div class="s">/ seat</div>
+    </div>
+  </a>
+</template>
+
+<script>
+frappe.ready(function () {
+  rs.cityAutocomplete(document.getElementById("origin"));
+  rs.cityAutocomplete(document.getElementById("destination"));
+
+  const params = new URLSearchParams(window.location.search);
+  document.getElementById("sort").value = params.get("sort") || "departure";
+  document.getElementById("max_price").value = params.get("max_price") || "";
+  document.getElementById("instant_booking").checked = params.get("instant_booking") === "1";
+  document.getElementById("women_only").checked = params.get("women_only") === "1";
+
+  const tpl = document.getElementById("rs-card-tpl");
+  const results = document.getElementById("rs-results");
+  const meta = document.getElementById("rs-results-meta");
+
+  async function runSearch() {
+    const args = {
+      origin: document.getElementById("origin").value.trim(),
+      destination: document.getElementById("destination").value.trim(),
+      date: document.getElementById("date").value,
+      seats: document.getElementById("seats").value,
+      sort: document.getElementById("sort").value,
+    };
+    const maxPrice = document.getElementById("max_price").value;
+    if (maxPrice) args.max_price = maxPrice;
+    if (document.getElementById("instant_booking").checked) args.instant_booking = 1;
+    if (document.getElementById("women_only").checked) args.women_only = 1;
+    results.innerHTML = "";
+    meta.textContent = "Searching…";
+    try {
+      const res = await rs.api("rideshare.api.search.search_rides", args);
+      results.innerHTML = "";
+      if (!res.results.length) {
+        // If a date was set, offer a one-click "search any day" fallback.
+        const dateInput = document.getElementById("date");
+        const hint = dateInput.value
+          ? `<p style="margin-top:6px;">No rides on <strong>${dateInput.value}</strong>. <a href="#" id="rs-clear-date">Show all upcoming rides on this route →</a></p>`
+          : `<p style="margin-top:6px;">No rides for this route yet. <a href="/publish">Be the first to publish one</a>.</p>`;
+        results.innerHTML = `<div class="rs-empty rs-card"><div class="ico">🛣️</div>No rides yet.${hint}</div>`;
+        meta.textContent = "0 rides found.";
+        const clear = document.getElementById("rs-clear-date");
+        if (clear) {
+          clear.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            dateInput.value = "";
+            runSearch();
+          });
+        }
+        return;
+      }
+      res.results.forEach((row) => {
+        const node = tpl.content.cloneNode(true);
+        const card = node.querySelector(".rs-ride-card");
+        card.href = "/rides/" + row.name;
+        node.querySelector(".t").textContent = rs.fmtTime(row.departure_datetime);
+        node.querySelector(".d").textContent = rs.fmtDate(row.departure_datetime);
+        node.querySelector(".from").textContent = row.origin_city;
+        node.querySelector(".to").textContent = row.destination_city;
+        const dur = row.duration_minutes ? Math.round(row.duration_minutes / 60 * 10) / 10 + "h" : "";
+        node.querySelector(".rs-ride-meta").textContent =
+          [row.distance_km ? row.distance_km + " km" : "", dur, row.seats_available + " seats left"].filter(Boolean).join(" · ");
+        const tagBox = node.querySelector(".rs-ride-meta.tags");
+        if (row.instant_booking) tagBox.innerHTML += '<span class="rs-chip rs-chip-primary">⚡ Instant book</span> ';
+        if (row.women_only) tagBox.innerHTML += '<span class="rs-chip rs-chip-warn">Women only</span> ';
+        if (row.max_2_back) tagBox.innerHTML += '<span class="rs-chip">Max 2 in back</span> ';
+        node.querySelector(".rs-avatar").textContent = row.driver_initials;
+        node.querySelector(".rs-driver-name").textContent = row.driver_name;
+        const stars = row.driver_avg_rating ? "★ " + row.driver_avg_rating.toFixed(1) : "New driver";
+        const verified = row.driver_is_verified ? " ✓ verified" : "";
+        node.querySelector(".rs-driver-rating").textContent = stars + verified;
+        node.querySelector(".p").textContent = rs.fmtMoney(row.price_per_seat, row.currency);
+        results.appendChild(node);
+      });
+      meta.textContent = res.count + " ride" + (res.count === 1 ? "" : "s") + " found.";
+    } catch (err) {
+      meta.textContent = "Error: " + (err.message || "could not search.");
+    }
+  }
+
+  document.getElementById("rs-search-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const params = new URLSearchParams();
+    const o = document.getElementById("origin").value.trim();
+    const d = document.getElementById("destination").value.trim();
+    const dt = document.getElementById("date").value;
+    const s = document.getElementById("seats").value;
+    if (o) params.set("origin", o);
+    if (d) params.set("destination", d);
+    if (dt) params.set("date", dt);
+    if (s && s !== "1") params.set("seats", s);
+    history.replaceState({}, "", "/rides" + (params.toString() ? "?" + params.toString() : ""));
+    runSearch();
+  });
+  ["sort", "max_price", "instant_booking", "women_only"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", runSearch);
+  });
+
+  runSearch();
+});
+</script>
+{%- endblock -%}

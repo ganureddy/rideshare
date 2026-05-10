@@ -1,0 +1,157 @@
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:640px;">
+  <h2>Become a driver</h2>
+  <p style="color:var(--rs-text-soft);">Tell us about yourself and your car. Verification is automatic in DEMO mode.</p>
+
+  <div class="rs-steps">
+    <div class="rs-step active" data-step="1"></div>
+    <div class="rs-step" data-step="2"></div>
+    <div class="rs-step" data-step="3"></div>
+    <div class="rs-step" data-step="4"></div>
+  </div>
+
+  <div class="rs-card">
+    <!-- Step 1 -->
+    <section data-pane="1">
+      <h3>About you</h3>
+      <div class="rs-field">
+        <label class="rs-label">Full name</label>
+        <input class="rs-input" id="full_name" placeholder="Aarav Sharma">
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Bio (optional)</label>
+        <textarea class="rs-textarea" id="bio" rows="3" placeholder="Friendly driver, light music, regular Delhi-Jaipur route."></textarea>
+      </div>
+    </section>
+
+    <!-- Step 2 -->
+    <section data-pane="2" hidden>
+      <h3>License</h3>
+      <div class="rs-field">
+        <label class="rs-label">Driving license number</label>
+        <input class="rs-input" id="license_number" placeholder="DL14 20211234567">
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">Expiry date</label>
+        <input class="rs-input" id="license_expiry" type="date">
+      </div>
+    </section>
+
+    <!-- Step 3 -->
+    <section data-pane="3" hidden>
+      <h3>Your car</h3>
+      <div class="rs-row">
+        <div class="rs-field">
+          <label class="rs-label">Make</label>
+          <input class="rs-input" id="make" placeholder="Maruti">
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Model</label>
+          <input class="rs-input" id="model" placeholder="Swift">
+        </div>
+      </div>
+      <div class="rs-row">
+        <div class="rs-field">
+          <label class="rs-label">Year</label>
+          <input class="rs-input" id="year" type="number" min="1990" max="2030" placeholder="2022">
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Color</label>
+          <input class="rs-input" id="color" placeholder="White">
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Passenger seats</label>
+          <select class="rs-select" id="seats_available">
+            {%- for n in [1,2,3,4,5,6,7] -%}<option value="{{ n }}" {{ "selected" if n == 3 else "" }}>{{ n }}</option>{%- endfor -%}
+          </select>
+        </div>
+      </div>
+      <div class="rs-field">
+        <label class="rs-label">License plate</label>
+        <input class="rs-input" id="license_plate" placeholder="DL 01 AB 1234">
+      </div>
+    </section>
+
+    <!-- Step 4 -->
+    <section data-pane="4" hidden>
+      <h3>Preferences</h3>
+      <div class="rs-row">
+        <div class="rs-field">
+          <label class="rs-label">Music</label>
+          <select class="rs-select" id="preferences_music">
+            <option>Quiet</option><option selected>Some</option><option>Loud</option>
+          </select>
+        </div>
+        <div class="rs-field">
+          <label class="rs-label">Chat</label>
+          <select class="rs-select" id="preferences_chat">
+            <option>Quiet</option><option selected>Some</option><option>Chatty</option>
+          </select>
+        </div>
+      </div>
+      <div class="rs-checkbox-row"><input type="checkbox" id="preferences_smoking"><label for="preferences_smoking">Smoking OK</label></div>
+      <div class="rs-checkbox-row"><input type="checkbox" id="preferences_pets"><label for="preferences_pets">Pets OK</label></div>
+    </section>
+
+    <div style="display:flex; justify-content:space-between; margin-top:18px;">
+      <button id="rs-back" class="rs-btn rs-btn-ghost" hidden>← Back</button>
+      <div></div>
+      <button id="rs-next" class="rs-btn rs-btn-primary">Next →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+frappe.ready(function () {
+  let step = 1;
+  const total = 4;
+  const next = document.getElementById("rs-next");
+  const back = document.getElementById("rs-back");
+
+  function show() {
+    document.querySelectorAll(".rs-step").forEach((s) => {
+      s.classList.toggle("active", +s.dataset.step <= step);
+    });
+    document.querySelectorAll("[data-pane]").forEach((p) => {
+      p.hidden = +p.dataset.pane !== step;
+    });
+    back.hidden = step === 1;
+    next.textContent = step === total ? "Finish" : "Next →";
+  }
+
+  back.addEventListener("click", () => { step = Math.max(1, step - 1); show(); });
+  next.addEventListener("click", async () => {
+    if (step < total) { step++; show(); return; }
+    next.disabled = true;
+    try {
+      await rs.api("rideshare.api.onboarding.upsert_driver_profile", {
+        full_name: document.getElementById("full_name").value,
+        bio: document.getElementById("bio").value,
+        license_number: document.getElementById("license_number").value,
+        license_expiry: document.getElementById("license_expiry").value || null,
+        preferences_music: document.getElementById("preferences_music").value,
+        preferences_chat: document.getElementById("preferences_chat").value,
+        preferences_smoking: document.getElementById("preferences_smoking").checked ? 1 : 0,
+        preferences_pets: document.getElementById("preferences_pets").checked ? 1 : 0,
+      });
+      const veh = await rs.api("rideshare.api.onboarding.upsert_vehicle", {
+        make: document.getElementById("make").value,
+        model: document.getElementById("model").value,
+        year: +document.getElementById("year").value || 2020,
+        color: document.getElementById("color").value,
+        seats_available: +document.getElementById("seats_available").value || 3,
+        license_plate: document.getElementById("license_plate").value,
+      });
+      rs.toast("You're a driver! 🚗 Now publish a ride.", "success");
+      setTimeout(() => { window.location.href = "/publish"; }, 800);
+    } catch (err) {
+      rs.toast(err.message || "Could not save", "error");
+      next.disabled = false;
+    }
+  });
+
+  show();
+});
+</script>
+{%- endblock -%}

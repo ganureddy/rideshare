@@ -1,0 +1,241 @@
+/* Rideshare — BlaBlaCar-inspired theme */
+
+:root {
+  --rs-primary: #00aff5;
+  --rs-primary-dark: #0090d4;
+  --rs-text: #1a1a1a;
+  --rs-text-soft: #5b6b7a;
+  --rs-bg: #ffffff;
+  --rs-bg-soft: #f5f7fa;
+  --rs-border: #e6ebf1;
+  --rs-success: #2dbe6c;
+  --rs-warn: #ff9f1c;
+  --rs-danger: #e6493b;
+  --rs-radius: 16px;
+  --rs-shadow: 0 4px 20px rgba(20, 30, 60, 0.06);
+  --rs-shadow-lg: 0 12px 32px rgba(20, 30, 60, 0.10);
+  --rs-font: -apple-system, BlinkMacSystemFont, "Inter", "DM Sans", "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+}
+
+html, body { margin: 0; padding: 0; }
+body.rs-page {
+  font-family: var(--rs-font);
+  color: var(--rs-text);
+  background: var(--rs-bg-soft);
+  line-height: 1.5;
+}
+body.rs-page * { box-sizing: border-box; }
+body.rs-page a { color: var(--rs-primary); text-decoration: none; }
+body.rs-page a:hover { text-decoration: underline; }
+body.rs-page h1, body.rs-page h2, body.rs-page h3 { color: var(--rs-text); margin: 0 0 12px 0; }
+
+/* ---- Layout ---- */
+.rs-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.rs-container { max-width: 1100px; margin: 0 auto; padding: 0 20px; width: 100%; }
+.rs-content { flex: 1; padding: 32px 0; }
+
+/* ---- Top nav ---- */
+.rs-nav {
+  background: white;
+  border-bottom: 1px solid var(--rs-border);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.rs-nav-inner {
+  display: flex; align-items: center; gap: 24px;
+  height: 64px;
+  max-width: 1100px; margin: 0 auto; padding: 0 20px;
+}
+.rs-logo {
+  font-weight: 800; font-size: 20px; color: var(--rs-primary) !important;
+  letter-spacing: -0.5px;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.rs-logo-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: var(--rs-primary);
+  box-shadow: 0 0 0 4px rgba(0, 175, 245, 0.18);
+}
+.rs-nav-links { display: flex; gap: 16px; align-items: center; flex: 1; }
+.rs-nav-links a { color: var(--rs-text); font-weight: 500; padding: 8px 12px; border-radius: 8px; }
+.rs-nav-links a:hover { background: var(--rs-bg-soft); text-decoration: none; }
+.rs-nav-spacer { flex: 1; }
+.rs-nav-cta { display: flex; gap: 8px; align-items: center; }
+
+/* ---- Buttons ---- */
+.rs-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  border: 0; padding: 11px 20px; border-radius: 999px;
+  font-family: var(--rs-font); font-weight: 600; font-size: 15px; cursor: pointer;
+  transition: transform 0.05s ease, box-shadow 0.15s ease, background 0.15s ease;
+  text-decoration: none !important;
+}
+.rs-btn:active { transform: translateY(1px); }
+.rs-btn-primary { background: var(--rs-primary); color: white; }
+.rs-btn-primary:hover { background: var(--rs-primary-dark); color: white; }
+.rs-btn-ghost { background: transparent; color: var(--rs-text); }
+.rs-btn-ghost:hover { background: var(--rs-bg-soft); }
+.rs-btn-outline {
+  background: white; color: var(--rs-text); border: 1px solid var(--rs-border);
+}
+.rs-btn-outline:hover { border-color: var(--rs-primary); color: var(--rs-primary); }
+.rs-btn-block { width: 100%; padding: 14px; }
+.rs-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---- Cards ---- */
+.rs-card {
+  background: white; border: 1px solid var(--rs-border); border-radius: var(--rs-radius);
+  padding: 24px; box-shadow: var(--rs-shadow);
+}
+.rs-card-tight { padding: 16px; }
+.rs-card-h { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+
+/* ---- Forms ---- */
+.rs-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.rs-label { font-size: 13px; color: var(--rs-text-soft); font-weight: 600; }
+.rs-input, .rs-select, .rs-textarea {
+  font-family: var(--rs-font); font-size: 15px; color: var(--rs-text);
+  padding: 12px 14px; border: 1px solid var(--rs-border); border-radius: 12px;
+  background: white; outline: none; width: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rs-input:focus, .rs-select:focus, .rs-textarea:focus {
+  border-color: var(--rs-primary); box-shadow: 0 0 0 4px rgba(0, 175, 245, 0.12);
+}
+.rs-checkbox-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+}
+.rs-row { display: flex; gap: 16px; }
+.rs-row > * { flex: 1; }
+@media (max-width: 700px) { .rs-row { flex-direction: column; gap: 0; } }
+
+/* ---- Hero ---- */
+.rs-hero {
+  background: linear-gradient(180deg, #e9f6fe 0%, var(--rs-bg-soft) 100%);
+  padding: 56px 0 80px;
+}
+.rs-hero h1 {
+  font-size: 40px; line-height: 1.15; max-width: 720px;
+  margin: 0 auto 14px; text-align: center;
+}
+.rs-hero p { color: var(--rs-text-soft); text-align: center; margin: 0 auto 32px; max-width: 560px; }
+.rs-search-box {
+  background: white; border-radius: 999px; box-shadow: var(--rs-shadow-lg);
+  display: flex; align-items: center; padding: 8px;
+  max-width: 880px; margin: 0 auto;
+}
+.rs-search-cell {
+  flex: 1; padding: 8px 16px; border-right: 1px solid var(--rs-border);
+}
+.rs-search-cell:last-of-type { border-right: 0; }
+.rs-search-cell label { display: block; font-size: 11px; color: var(--rs-text-soft); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.rs-search-cell input, .rs-search-cell select {
+  border: 0; padding: 4px 0 0 0; font-size: 16px; font-weight: 600;
+  width: 100%; outline: none; font-family: var(--rs-font);
+  background: transparent;
+}
+.rs-search-go { margin-left: 8px; }
+@media (max-width: 760px) {
+  .rs-hero h1 { font-size: 30px; }
+  .rs-search-box { flex-direction: column; border-radius: var(--rs-radius); padding: 12px; }
+  .rs-search-cell { border-right: 0; border-bottom: 1px solid var(--rs-border); padding: 10px 14px; }
+  .rs-search-cell:last-of-type { border-bottom: 0; }
+  .rs-search-go { width: 100%; margin-top: 8px; }
+}
+
+/* ---- Ride card ---- */
+.rs-ride-card {
+  background: white; border: 1px solid var(--rs-border); border-radius: var(--rs-radius);
+  padding: 20px; margin-bottom: 12px;
+  display: flex; gap: 18px; align-items: stretch;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.rs-ride-card:hover { box-shadow: var(--rs-shadow); border-color: #cfe9fb; }
+.rs-ride-time { min-width: 90px; }
+.rs-ride-time .t { font-weight: 700; font-size: 18px; }
+.rs-ride-time .d { color: var(--rs-text-soft); font-size: 13px; }
+.rs-ride-route { flex: 1; min-width: 0; }
+.rs-route-line {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 600; font-size: 16px;
+}
+.rs-route-line .arr { color: var(--rs-text-soft); }
+.rs-ride-meta { color: var(--rs-text-soft); font-size: 14px; margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+.rs-ride-driver { display: flex; align-items: center; gap: 10px; min-width: 180px; }
+.rs-avatar {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--rs-primary); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px;
+}
+.rs-driver-name { font-weight: 600; font-size: 14px; }
+.rs-driver-rating { color: var(--rs-text-soft); font-size: 13px; display: flex; align-items: center; gap: 4px; }
+.rs-ride-price { text-align: right; min-width: 96px; }
+.rs-ride-price .p { font-size: 22px; font-weight: 800; color: var(--rs-text); }
+.rs-ride-price .s { color: var(--rs-text-soft); font-size: 12px; }
+@media (max-width: 760px) {
+  .rs-ride-card { flex-direction: column; gap: 10px; }
+  .rs-ride-price { text-align: left; }
+}
+
+/* ---- Chips / badges ---- */
+.rs-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--rs-bg-soft); color: var(--rs-text-soft);
+}
+.rs-chip-success { background: #e6f8ee; color: var(--rs-success); }
+.rs-chip-primary { background: #e6f6fe; color: var(--rs-primary-dark); }
+.rs-chip-warn { background: #fff3e0; color: #b86b00; }
+.rs-chip-danger { background: #fce9e7; color: var(--rs-danger); }
+.rs-badge-verified::before { content: "\2713 "; }
+
+/* ---- Step wizard ---- */
+.rs-steps { display: flex; gap: 8px; margin: 0 0 24px 0; }
+.rs-step {
+  flex: 1; height: 6px; border-radius: 3px; background: var(--rs-border);
+}
+.rs-step.active { background: var(--rs-primary); }
+
+/* ---- Ride detail / timeline ---- */
+.rs-timeline { padding-left: 24px; position: relative; }
+.rs-timeline::before {
+  content: ""; position: absolute; left: 8px; top: 6px; bottom: 6px;
+  width: 2px; background: var(--rs-border);
+}
+.rs-tl-item { position: relative; padding: 6px 0; }
+.rs-tl-item::before {
+  content: ""; position: absolute; left: -20px; top: 12px;
+  width: 10px; height: 10px; border-radius: 50%; background: var(--rs-primary); border: 2px solid white;
+  box-shadow: 0 0 0 1px var(--rs-primary);
+}
+.rs-tl-item .city { font-weight: 600; }
+.rs-tl-item .addr { color: var(--rs-text-soft); font-size: 13px; }
+
+/* ---- Empty state ---- */
+.rs-empty {
+  text-align: center; padding: 60px 20px; color: var(--rs-text-soft);
+}
+.rs-empty .ico { font-size: 48px; margin-bottom: 12px; }
+
+/* ---- Footer ---- */
+.rs-footer {
+  border-top: 1px solid var(--rs-border); padding: 24px 0;
+  background: white; color: var(--rs-text-soft); font-size: 13px;
+  text-align: center;
+}
+
+/* ---- Toast ---- */
+.rs-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--rs-text); color: white; padding: 12px 20px;
+  border-radius: 12px; box-shadow: var(--rs-shadow-lg); z-index: 100;
+  opacity: 0; transition: opacity 0.2s;
+  pointer-events: none;
+  font-size: 14px;
+}
+.rs-toast.show { opacity: 1; }
+.rs-toast.success { background: var(--rs-success); }
+.rs-toast.error { background: var(--rs-danger); }

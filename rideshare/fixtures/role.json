@@ -1,0 +1,52 @@
+[
+ {
+  "doctype": "Role",
+  "name": "Rider",
+  "role_name": "Rider",
+  "desk_access": 0,
+  "two_factor_auth": 0,
+  "disabled": 0,
+  "is_custom": 0,
+  "restrict_to_domain": null
+ },
+ {
+  "doctype": "Role",
+  "name": "Driver",
+  "role_name": "Driver",
+  "desk_access": 0,
+  "two_factor_auth": 0,
+  "disabled": 0,
+  "is_custom": 0,
+  "restrict_to_domain": null
+ },
+ {
+  "doctype": "Role",
+  "name": "Verified Driver",
+  "role_name": "Verified Driver",
+  "desk_access": 0,
+  "two_factor_auth": 0,
+  "disabled": 0,
+  "is_custom": 0,
+  "restrict_to_domain": null
+ },
+ {
+  "doctype": "Role",
+  "name": "Rideshare Admin",
+  "role_name": "Rideshare Admin",
+  "desk_access": 1,
+  "two_factor_auth": 1,
+  "disabled": 0,
+  "is_custom": 0,
+  "restrict_to_domain": null
+ },
+ {
+  "doctype": "Role",
+  "name": "Support Agent",
+  "role_name": "Support Agent",
+  "desk_access": 1,
+  "two_factor_auth": 0,
+  "disabled": 0,
+  "is_custom": 0,
+  "restrict_to_domain": null
+ }
+]
