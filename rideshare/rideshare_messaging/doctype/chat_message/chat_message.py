@@ -1,0 +1,93 @@
+"""Chat Message controller.
+
+After insert we:
+  1. Stamp the parent thread's ``last_message`` / ``last_message_at`` /
+     ``last_sender`` so list views can render a preview without joining.
+  2. Bump the unread counter for everyone *except* the sender.
+  3. Broadcast a realtime payload on the ``chat:<thread_name>`` room so
+     subscribed clients receive the message instantly.
+
+We deliberately keep all of this in ``after_insert`` (not ``on_update``)
+because chat messages are append-only: editing or re-saving an existing
+record must NOT re-broadcast or re-bump counters.
+"""
+
+from __future__ import annotations
+
+import frappe
+from frappe.model.document import Document
+from frappe.utils import now_datetime
+
+
+class ChatMessage(Document):
+	def before_insert(self) -> None:
+		if not self.sent_at:
+			self.sent_at = now_datetime()
+		if not self.sender:
+			self.sender = frappe.session.user
+		# Always derive sender_role from the thread (don't trust client input)
+		# unless the caller explicitly marked this as a System message.
+		if self.sender_role == "System" and self.is_system:
+			return
+		if self.thread:
+			thread = frappe.db.get_value(
+				"Chat Thread", self.thread, ["driver", "passenger"], as_dict=True
+			)
+			if thread:
+				if thread.driver and thread.driver == self.sender:
+					self.sender_role = "Driver"
+				elif thread.passenger and thread.passenger == self.sender:
+					self.sender_role = "Passenger"
+				elif _has_support_role(self.sender):
+					self.sender_role = "Support"
+				else:
+					self.sender_role = "Passenger"
+
+	def after_insert(self) -> None:
+		self._touch_thread()
+		self._broadcast()
+
+	def _touch_thread(self) -> None:
+		thread = frappe.get_doc("Chat Thread", self.thread)
+		preview = (self.body or "").replace("\n", " ").strip()
+		if len(preview) > 200:
+			preview = preview[:197] + "…"
+		thread.last_message = preview
+		thread.last_message_at = self.sent_at
+		thread.last_sender = self.sender
+
+		# Bump unread counters for everyone *but* the sender.
+		if not self.is_system:
+			if self.sender_role != "Driver" and thread.driver:
+				thread.unread_for_driver = (thread.unread_for_driver or 0) + 1
+			if self.sender_role != "Passenger" and thread.passenger:
+				thread.unread_for_passenger = (thread.unread_for_passenger or 0) + 1
+			if self.sender_role != "Support":
+				thread.unread_for_support = (thread.unread_for_support or 0) + 1
+
+		thread.flags.ignore_permissions = True
+		thread.save(ignore_permissions=True)
+
+	def _broadcast(self) -> None:
+		"""Push the new message onto the realtime room for this thread."""
+
+		payload = {
+			"name": self.name,
+			"thread": self.thread,
+			"sender": self.sender,
+			"sender_role": self.sender_role,
+			"body": self.body,
+			"sent_at": self.sent_at.isoformat() if self.sent_at else None,
+			"is_system": bool(self.is_system),
+		}
+		frappe.publish_realtime(
+			event="rideshare:chat:message",
+			message=payload,
+			room=f"chat:{self.thread}",
+			after_commit=True,
+		)
+
+
+def _has_support_role(user: str) -> bool:
+	roles = set(frappe.get_roles(user))
+	return bool(roles & {"Support Agent", "Rideshare Admin", "System Manager"})

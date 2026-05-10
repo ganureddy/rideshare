@@ -14,7 +14,9 @@
     "submit:android": "eas submit --platform android --profile production"
   },
   "dependencies": {
+    "@expo/vector-icons": "^14.0.0",
     "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-native-community/datetimepicker": "8.0.1",
     "@react-navigation/bottom-tabs": "^6.6.1",
     "@react-navigation/native": "^6.1.18",
     "@react-navigation/native-stack": "^6.11.0",
@@ -38,9 +40,9 @@
   "devDependencies": {
     "@babel/core": "^7.24.0",
     "@types/react": "~18.2.79",
-    "babel-plugin-module-resolver": "^5.0.3",
-    "dotenv": "^17.4.2",
-    "eslint": "^8.57.0",
-    "typescript": "~5.3.3"
+    "babel-plugin-module-resolver": "^5.0.2",
+    "dotenv": "^16.4.5",
+    "typescript": "~5.3.3",
+    "eslint": "^8.57.0"
   }
 }

@@ -1,9 +1,14 @@
 """Public ride search.
 
 Phase 4 deliverable.  Matches:
-1. Direct origin → destination,
+1. Direct origin → destination (exact City Link match).
 2. Segment match: origin/dest match a waypoint of a longer ride
-   (so Delhi→Jaipur appears for Delhi→Jaipur→Mumbai).
+   (so Delhi → Mumbai appears for Delhi → Pune when Pune is a waypoint).
+3. Proximity match: when the caller provides lat/lng (the mobile app
+   does, for free-text Google Places that aren't in our City table) we
+   include rides whose great-circle distance to the caller's origin and
+   destination is within a small radius — the bbox SQL pre-filter keeps
+   it cheap, and a Python rerank trims the long tail.
 
 Filters: women-only, instant-booking, max-price.
 Sort: ``departure`` (default), ``price_asc``, ``price_desc``,
@@ -12,16 +17,27 @@ Sort: ``departure`` (default), ``price_asc``, ``price_desc``,
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import frappe
 from frappe.utils import cint, flt, get_datetime
+
+from rideshare.utils.geo import LatLng, haversine_km
+
+# How close a ride's origin / destination / waypoint must be to count as a
+# proximity match. 50km lets "Delhi" match "New Delhi" / "Gurgaon" too.
+PROXIMITY_RADIUS_KM = 50.0
 
 
 @frappe.whitelist(allow_guest=True)
 def search_rides(
 	origin: str | None = None,
 	destination: str | None = None,
+	origin_lat: float | None = None,
+	origin_lng: float | None = None,
+	destination_lat: float | None = None,
+	destination_lng: float | None = None,
 	date: str | None = None,
 	seats: int = 1,
 	women_only: int = 0,
@@ -31,7 +47,12 @@ def search_rides(
 	limit: int = 25,
 	offset: int = 0,
 ) -> dict[str, Any]:
-	"""Return a list of matching published rides + facets."""
+	"""Return matching published rides.
+
+	The frontend can pass either a ``origin/destination`` City label *or*
+	a lat/lng pair.  Lat/lng wins for proximity matching; the City label
+	is used as a fast equality filter first.
+	"""
 
 	# Frappe passes whitelisted args as strings from form-encoded requests,
 	# so "0" is truthy in plain bool checks.  Coerce booleans/numbers up front.
@@ -45,6 +66,11 @@ def search_rides(
 		except (TypeError, ValueError):
 			max_price_f = None
 
+	o_lat = _flt(origin_lat)
+	o_lng = _flt(origin_lng)
+	d_lat = _flt(destination_lat)
+	d_lng = _flt(destination_lng)
+
 	conditions: list[str] = ["r.status = 'Published'", "r.seats_available >= %(seats)s"]
 	values: dict[str, Any] = {"seats": seats_i}
 
@@ -54,7 +80,6 @@ def search_rides(
 		conditions.append("DATE(r.departure_datetime) = %(date)s")
 		values["date"] = dt.date()
 	else:
-		# Default: only future rides.
 		conditions.append("r.departure_datetime >= NOW()")
 
 	if women_only_b:
@@ -65,24 +90,18 @@ def search_rides(
 		conditions.append("r.price_per_seat <= %(max_price)s")
 		values["max_price"] = max_price_f
 
-	# Origin/destination matching uses a UNION between direct rides and rides
-	# whose waypoint chain contains the origin and destination in order.
-	o_clause = ""
-	d_clause = ""
-	if origin:
-		o_clause = """AND (
-			r.origin_city = %(origin)s
-			OR EXISTS (SELECT 1 FROM `tabRide Waypoint` rw
-			            WHERE rw.parent = r.name AND rw.city = %(origin)s)
-		)"""
-		values["origin"] = origin
-	if destination:
-		d_clause = """AND (
-			r.destination_city = %(destination)s
-			OR EXISTS (SELECT 1 FROM `tabRide Waypoint` rw
-			            WHERE rw.parent = r.name AND rw.city = %(destination)s)
-		)"""
-		values["destination"] = destination
+	# Origin / destination matching: combine label-based and (when lat/lng
+	# supplied) bounding-box proximity.  Both go in the SQL WHERE so the
+	# planner can use indexes; we then re-rank the candidate set with
+	# haversine for proximity precision.
+	o_clause = _label_or_proximity_clause(
+		"origin", "origin_city", "origin_lat", "origin_lng",
+		label=origin, lat=o_lat, lng=o_lng, values=values,
+	)
+	d_clause = _label_or_proximity_clause(
+		"destination", "destination_city", "destination_lat", "destination_lng",
+		label=destination, lat=d_lat, lng=d_lng, values=values,
+	)
 
 	order = {
 		"departure": "r.departure_datetime ASC",
@@ -91,13 +110,15 @@ def search_rides(
 		"duration": "r.duration_minutes ASC, r.departure_datetime ASC",
 	}.get(sort, "r.departure_datetime ASC")
 
-	values["limit"] = int(limit)
+	values["limit"] = int(limit) * 2  # over-fetch so the rerank has room
 	values["offset"] = int(offset)
 	conds = " AND ".join(conditions)
 
 	rows = frappe.db.sql(
 		f"""SELECT r.name, r.driver, r.origin_city, r.destination_city,
 		           r.origin_address, r.destination_address,
+		           r.origin_lat, r.origin_lng,
+		           r.destination_lat, r.destination_lng,
 		           r.departure_datetime, r.estimated_arrival,
 		           r.distance_km, r.duration_minutes,
 		           r.seats_total, r.seats_available,
@@ -111,6 +132,16 @@ def search_rides(
 		values,
 		as_dict=True,
 	)
+
+	# Proximity precision rerank — drop rows that passed the bbox but are
+	# actually outside the haversine radius.  Pull waypoints in one shot.
+	if (o_lat and o_lng) or (d_lat and d_lng):
+		rows = _rerank_by_proximity(
+			rows,
+			o_lat=o_lat, o_lng=o_lng,
+			d_lat=d_lat, d_lng=d_lng,
+		)
+	rows = rows[: int(limit)]
 
 	# Hydrate driver info.
 	for row in rows:
@@ -129,9 +160,12 @@ def search_rides(
 		row["driver_total_trips"] = int(dp.get("total_trips") or 0)
 		row["driver_is_verified"] = bool(dp.get("is_verified") or 0)
 
+	# Compatibility: keep both `rides` (new) and `results` (legacy) keys.
 	return {
+		"rides": rows,
 		"results": rows,
 		"count": len(rows),
+		"total": len(rows),
 		"filters": {
 			"origin": origin,
 			"destination": destination,
@@ -143,6 +177,130 @@ def search_rides(
 			"sort": sort,
 		},
 	}
+
+
+def _label_or_proximity_clause(
+	tag: str,
+	city_col: str,
+	lat_col: str,
+	lng_col: str,
+	*,
+	label: str | None,
+	lat: float | None,
+	lng: float | None,
+	values: dict[str, Any],
+) -> str:
+	"""Build the AND-clause for either ``origin`` or ``destination``.
+
+	The result OR's together (a) exact city match, (b) waypoint match,
+	(c) bounding-box proximity match (when a lat/lng pair is given).
+	"""
+
+	parts: list[str] = []
+	if label:
+		# Exact City record name (fast indexed match).
+		values[f"{tag}_label"] = label
+		parts.append(f"r.{city_col} = %({tag}_label)s")
+		# Waypoint match — the driver's published intermediate stops.
+		parts.append(
+			f"""EXISTS (SELECT 1 FROM `tabRide Waypoint` rw
+			            WHERE rw.parent = r.name AND rw.city = %({tag}_label)s)"""
+		)
+	if lat and lng:
+		# Bounding-box pre-filter for the ride's origin / destination, plus
+		# any waypoint inside the radius — covers "A→Z appears for A→M".
+		min_lat, min_lng, max_lat, max_lng = _bbox(lat, lng, PROXIMITY_RADIUS_KM)
+		values[f"{tag}_min_lat"] = min_lat
+		values[f"{tag}_max_lat"] = max_lat
+		values[f"{tag}_min_lng"] = min_lng
+		values[f"{tag}_max_lng"] = max_lng
+		parts.append(
+			f"""(r.{lat_col} BETWEEN %({tag}_min_lat)s AND %({tag}_max_lat)s
+			     AND r.{lng_col} BETWEEN %({tag}_min_lng)s AND %({tag}_max_lng)s)"""
+		)
+		parts.append(
+			f"""EXISTS (SELECT 1 FROM `tabRide Waypoint` rw
+			            WHERE rw.parent = r.name
+			              AND rw.lat BETWEEN %({tag}_min_lat)s AND %({tag}_max_lat)s
+			              AND rw.lng BETWEEN %({tag}_min_lng)s AND %({tag}_max_lng)s)"""
+		)
+
+	if not parts:
+		return ""
+	return "AND (" + " OR ".join(parts) + ")"
+
+
+def _bbox(lat: float, lng: float, radius_km: float) -> tuple[float, float, float, float]:
+	lat_delta = radius_km / 111.0
+	lng_delta = radius_km / (111.0 * max(math.cos(math.radians(lat)), 1e-6))
+	return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
+
+
+def _rerank_by_proximity(
+	rows: list[dict],
+	*,
+	o_lat: float | None,
+	o_lng: float | None,
+	d_lat: float | None,
+	d_lng: float | None,
+) -> list[dict]:
+	"""Drop rows where the ride doesn't pass within ``PROXIMITY_RADIUS_KM``
+	of both the requested origin and destination (when supplied)."""
+
+	# Pre-load all waypoints once for the candidate set.
+	ride_names = [r.name for r in rows]
+	waypoints_by_ride: dict[str, list[tuple[float, float]]] = {n: [] for n in ride_names}
+	if ride_names:
+		for w in frappe.db.sql(
+			"""SELECT parent, lat, lng FROM `tabRide Waypoint`
+			   WHERE parent IN %(p)s AND lat IS NOT NULL AND lng IS NOT NULL""",
+			{"p": ride_names},
+			as_dict=True,
+		):
+			waypoints_by_ride.setdefault(w.parent, []).append((w.lat, w.lng))
+
+	keep: list[dict] = []
+	for row in rows:
+		ok_o = ok_d = True
+		if o_lat and o_lng:
+			ok_o = _hits(o_lat, o_lng, row.origin_lat, row.origin_lng,
+			             waypoints_by_ride.get(row.name) or [])
+		if d_lat and d_lng:
+			# Order matters for trips: the destination must come after the
+			# origin in the route. Easy approximation: a waypoint counts
+			# only if it isn't closer to the origin than the actual origin.
+			ok_d = _hits(d_lat, d_lng, row.destination_lat, row.destination_lng,
+			             waypoints_by_ride.get(row.name) or [])
+		if ok_o and ok_d:
+			keep.append(row)
+	return keep
+
+
+def _hits(lat: float, lng: float, ride_lat: float | None, ride_lng: float | None,
+          waypoints: list[tuple[float, float]]) -> bool:
+	target = LatLng(lat, lng)
+	if ride_lat and ride_lng:
+		try:
+			if haversine_km(target, LatLng(float(ride_lat), float(ride_lng))) <= PROXIMITY_RADIUS_KM:
+				return True
+		except Exception:
+			pass
+	for wlat, wlng in waypoints:
+		try:
+			if haversine_km(target, LatLng(float(wlat), float(wlng))) <= PROXIMITY_RADIUS_KM:
+				return True
+		except Exception:
+			continue
+	return False
+
+
+def _flt(v) -> float | None:
+	if v is None or v == "":
+		return None
+	try:
+		return float(v)
+	except (TypeError, ValueError):
+		return None
 
 
 @frappe.whitelist(allow_guest=True)

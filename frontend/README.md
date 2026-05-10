@@ -7,6 +7,13 @@ A mobile client for the `rideshare` Frappe app. Lets users:
 - Publish a ride with price suggestions and a map preview.
 - Book a seat and follow the driver live on a map during the trip.
 
+The visual design is **Uber-inspired black & white** (no brand colours,
+single-accent surface). Tokens live in `src/theme.ts`; the matching web
+theme lives in `rideshare/public/css/rideshare.css`.
+
+> Public web login mirror: `https://<your-host>/rideshare/login` (alias
+> for `/login`, exposed via `website_route_rules` in `hooks.py`).
+
 The backend is the same Frappe app under `apps/rideshare/`. This frontend
 talks to it exclusively over `/api/method/...` endpoints — no DB access,
 no shared code.
@@ -44,9 +51,19 @@ on the `Ride` row and broadcasts via `frappe.publish_realtime` to room
 `ride:<name>`. Passenger devices subscribe via Socket.IO and fall back to
 a 5 s REST poll if the socket disconnects.
 
-**Segment matching** is already built into the backend search: a ride
-A → Z with waypoints (B, C, … M, … Y) shows up for an A → M passenger
-search. See `rideshare/api/search.py`.
+**Segment matching** is built into the backend search and uses two
+mechanisms together so passengers can find longer rides that go through
+their stop:
+
+1. **Exact city match** — `Ride.origin_city`, `Ride.destination_city`
+   and any `Ride Waypoint.city` are matched against the search labels.
+2. **Lat/lng proximity** (`PROXIMITY_RADIUS_KM = 50`) — the mobile app
+   sends the resolved lat/lng of each Google Places suggestion; the
+   backend then runs a bounding-box pre-filter on origin, destination
+   and *every waypoint*, followed by a Haversine rerank. So a published
+   ride A → Z with intermediate stops (B, C, … M, … Y) appears for an
+   A → M booker even when the booker typed a free-text place name that
+   doesn't exist in our `City` table. See `rideshare/api/search.py`.
 
 ---
 

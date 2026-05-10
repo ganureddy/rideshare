@@ -34,6 +34,11 @@ web_include_js = "/assets/rideshare/js/rideshare.js"
 website_route_rules = [
 	{"from_route": "/rides/<ride_name>", "to_route": "rides/ride"},
 	{"from_route": "/u/<username>", "to_route": "u/profile"},
+	# Public Rideshare-branded login alias — user-facing URL the mobile app
+	# and marketing material can deep-link to (e.g. /rideshare/login?next=/me).
+	{"from_route": "/rideshare/login", "to_route": "login"},
+	{"from_route": "/rideshare/signup", "to_route": "signup"},
+	{"from_route": "/rideshare", "to_route": "index"},
 ]
 
 home_page = "index"

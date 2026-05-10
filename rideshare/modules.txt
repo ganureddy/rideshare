@@ -1,5 +1,6 @@
 Rideshare Core
 Rideshare Marketplace
+Rideshare Messaging
 Rideshare Payments
 Rideshare Trust And Safety
 Rideshare Reviews

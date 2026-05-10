@@ -1,9 +1,9 @@
 // Backend-proxied Places autocomplete. We never put the Google API key in
-// the bundle — instead, the device sends the partial query to the Frappe
-// server which proxies to Google with the server-side key.
+// the bundle — the device sends the partial query to the Frappe server which
+// proxies to Google with the server-side key.
 //
 // Behaviour mirrors Google's Places SDK: as the user types, we throttle
-// requests (200ms debounce), maintain a session_token across keystrokes,
+// requests (220ms debounce), maintain a session_token across keystrokes,
 // and use lat/lng biasing when the device location is available.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -14,8 +14,12 @@ import {
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
-  StyleSheet
+  StyleSheet,
+  Pressable,
+  Alert
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import { call } from "@/api/client";
 import { colors, radii, spacing } from "@/theme";
 
@@ -43,17 +47,28 @@ type Props = {
   value?: Place | null;
   onChange: (place: Place | null) => void;
   bias?: { lat: number; lng: number } | null;
+  /** Show the "Use current location" pill above the dropdown. Defaults true. */
+  enableCurrentLocation?: boolean;
+  /** Visual hint icon at the start of the input. */
+  iconName?: keyof typeof Ionicons.glyphMap;
 };
 
-export function PlacesAutocomplete({ label, placeholder, value, onChange, bias }: Props) {
+export function PlacesAutocomplete({
+  label,
+  placeholder,
+  value,
+  onChange,
+  bias,
+  enableCurrentLocation = true,
+  iconName = "location-outline"
+}: Props) {
   const [text, setText] = useState(value?.description ?? "");
   const [results, setResults] = useState<Prediction[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const sessionToken = useMemo(
     () => `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    // New session per mount; reset after a place is picked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,8 +86,8 @@ export function PlacesAutocomplete({ label, placeholder, value, onChange, bias }
       setOpen(false);
       return;
     }
+    setLoading(true);
     debounceRef.current = setTimeout(async () => {
-      setLoading(true);
       try {
         const res = await call<{ predictions: Prediction[] }>(
           "rideshare.api.places.autocomplete",
@@ -96,7 +111,7 @@ export function PlacesAutocomplete({ label, placeholder, value, onChange, bias }
 
   async function pick(p: Prediction) {
     setOpen(false);
-    setLoading(true);
+    setResolving(true);
     try {
       const det = await call<Place>("rideshare.api.places.place_details", {
         place_id: p.place_id,
@@ -110,35 +125,107 @@ export function PlacesAutocomplete({ label, placeholder, value, onChange, bias }
       };
       setText(p.description);
       onChange(place);
+    } catch (e: any) {
+      Alert.alert("Couldn't load place", e?.message ?? "Try again.");
     } finally {
-      setLoading(false);
+      setResolving(false);
     }
+  }
+
+  async function useCurrentLocation() {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission needed", "Enable location to use this option.");
+        return;
+      }
+      setResolving(true);
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High
+      });
+      const lat = loc.coords.latitude;
+      const lng = loc.coords.longitude;
+      const det = await call<Place & { city?: string; address?: string }>(
+        "rideshare.api.places.reverse_geocode",
+        { lat, lng }
+      );
+      const place: Place = {
+        place_id: det.place_id || `geo_${lat}_${lng}`,
+        description: det.address || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        primary_text: det.city || det.address,
+        secondary_text: det.address,
+        lat,
+        lng,
+        city: det.city,
+        address: det.address
+      };
+      setText(place.description);
+      onChange(place);
+      setOpen(false);
+    } catch (e: any) {
+      Alert.alert("Couldn't get location", e?.message ?? "Try again.");
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  function clear() {
+    setText("");
+    onChange(null);
+    setResults([]);
+    setOpen(false);
   }
 
   return (
     <View style={{ marginBottom: spacing(3) }}>
       <Text style={s.label}>{label}</Text>
-      <TextInput
-        style={s.input}
-        value={text}
-        onChangeText={onTextChange}
-        placeholder={placeholder ?? "City, address or landmark"}
-        placeholderTextColor={colors.soft}
-        autoCorrect={false}
-      />
-      {loading ? <ActivityIndicator style={{ marginTop: 6 }} color={colors.blue} /> : null}
-      {open && results.length > 0 ? (
+      <View style={s.inputWrap}>
+        <Ionicons name={iconName} size={18} color={colors.soft} style={{ marginLeft: 12 }} />
+        <TextInput
+          style={s.input}
+          value={text}
+          onChangeText={onTextChange}
+          placeholder={placeholder ?? "City, address or landmark"}
+          placeholderTextColor={colors.mute}
+          autoCorrect={false}
+          autoCapitalize="words"
+          onFocus={() => results.length > 0 && setOpen(true)}
+        />
+        {loading || resolving ? (
+          <ActivityIndicator color={colors.text} style={{ marginRight: 12 }} />
+        ) : text.length > 0 ? (
+          <Pressable onPress={clear} hitSlop={10} style={{ paddingHorizontal: 12 }}>
+            <Ionicons name="close-circle" size={18} color={colors.mute} />
+          </Pressable>
+        ) : null}
+      </View>
+
+      {open && (results.length > 0 || enableCurrentLocation) ? (
         <View style={s.dropdown}>
+          {enableCurrentLocation ? (
+            <TouchableOpacity onPress={useCurrentLocation} style={s.row}>
+              <Ionicons name="locate" size={18} color={colors.text} />
+              <View style={{ flex: 1 }}>
+                <Text style={s.primary}>Use current location</Text>
+                <Text style={s.secondary}>GPS-detected pickup</Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
           <FlatList
             keyboardShouldPersistTaps="handled"
             data={results}
             keyExtractor={(it) => it.place_id}
             renderItem={({ item }) => (
               <TouchableOpacity onPress={() => pick(item)} style={s.row}>
-                <Text style={s.primary}>{item.primary_text ?? item.description}</Text>
-                {item.secondary_text ? (
-                  <Text style={s.secondary}>{item.secondary_text}</Text>
-                ) : null}
+                <Ionicons name="location" size={18} color={colors.soft} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.primary} numberOfLines={1}>
+                    {item.primary_text ?? item.description}
+                  </Text>
+                  {item.secondary_text ? (
+                    <Text style={s.secondary} numberOfLines={1}>{item.secondary_text}</Text>
+                  ) : null}
+                </View>
               </TouchableOpacity>
             )}
           />
@@ -149,16 +236,22 @@ export function PlacesAutocomplete({ label, placeholder, value, onChange, bias }
 }
 
 const s = StyleSheet.create({
-  label: { fontSize: 12, color: colors.soft, marginBottom: 6 },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
+  label: { fontSize: 12, color: colors.soft, marginBottom: 6, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.4 },
+  inputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: colors.borderStrong,
     borderRadius: radii.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
+    backgroundColor: colors.bgAlt
+  },
+  input: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    fontSize: 15,
     color: colors.text,
-    backgroundColor: colors.card
+    fontWeight: "500"
   },
   dropdown: {
     marginTop: 6,
@@ -166,9 +259,18 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radii.md,
     backgroundColor: colors.card,
-    maxHeight: 240
+    maxHeight: 280,
+    overflow: "hidden"
   },
-  row: { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border },
-  primary: { fontSize: 15, color: colors.text },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border
+  },
+  primary: { fontSize: 15, color: colors.text, fontWeight: "600" },
   secondary: { fontSize: 12, color: colors.soft, marginTop: 2 }
 });

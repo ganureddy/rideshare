@@ -16,7 +16,7 @@ type AuthState = {
   user: string | null;
   mobileNo: string | null;
   profile: Profile | null;
-  signInWithPhone: (mobile: string, fullName?: string) => Promise<{ isNew: boolean }>;
+  signInWithPhone: (mobile: string, fullName?: string | null) => Promise<{ isNew: boolean }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 };

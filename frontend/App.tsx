@@ -33,7 +33,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <StatusBar style="dark" />
+        <StatusBar style="dark" backgroundColor="#FFFFFF" />
         <Root />
       </AuthProvider>
     </SafeAreaProvider>

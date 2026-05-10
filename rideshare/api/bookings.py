@@ -107,11 +107,16 @@ def create_booking(
 @frappe.whitelist()
 def confirm_payment(
 	booking: str,
-	gateway_order_id: str,
 	gateway_payment_id: str,
+	gateway_order_id: str | None = None,
 	gateway_signature: str | None = None,
 ) -> dict:
-	"""Verify gateway signature and mark the booking Confirmed."""
+	"""Verify gateway signature and mark the booking Confirmed.
+
+	When ``gateway_order_id`` isn't supplied (the mobile DEMO flow) we
+	auto-resolve it from the most recent Created transaction on the
+	booking — which is exactly what ``create_booking`` just produced.
+	"""
 
 	user = frappe.session.user
 	if user == "Guest":
@@ -120,6 +125,16 @@ def confirm_payment(
 	booking_doc = frappe.get_doc("Booking", booking)
 	if booking_doc.passenger != user:
 		frappe.throw(_("Not your booking."), frappe.PermissionError)
+
+	if not gateway_order_id:
+		gateway_order_id = frappe.db.get_value(
+			"Payment Transaction",
+			{"booking": booking_doc.name, "status": "Created"},
+			"gateway_order_id",
+			order_by="creation desc",
+		)
+		if not gateway_order_id:
+			frappe.throw(_("No payment order found for this booking."))
 
 	# Idempotency: if we've already captured this gateway_payment_id,
 	# return success without doing the work twice.
@@ -163,6 +178,19 @@ def confirm_payment(
 	booking_doc.status = "Confirmed"
 	booking_doc.payment_status = "Held"
 	booking_doc.save(ignore_permissions=True)
+
+	# Auto-open the driver↔passenger chat thread for this booking.
+	# Failure here mustn't block the confirm flow.
+	try:
+		from rideshare.api.chat import start_booking_chat as _open_chat
+
+		_open_chat(booking_doc.name)
+	except Exception:
+		frappe.log_error(
+			title="Could not open booking chat after payment confirm",
+			message=frappe.get_traceback(),
+		)
+
 	frappe.db.commit()
 
 	return {

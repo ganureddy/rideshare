@@ -18,8 +18,6 @@ export async function getSocket(): Promise<Socket> {
     reconnectionDelayMax: 8000,
     auth: creds
       ? {
-          // Frappe's socket bridge accepts the same token header for auth
-          // when configured behind nginx with auth-pass-through.
           api_key: creds.apiKey,
           api_secret: creds.apiSecret,
           user: creds.user
@@ -28,6 +26,10 @@ export async function getSocket(): Promise<Socket> {
   });
   return _socket;
 }
+
+// ---------------------------------------------------------------------------
+// Live trip tracking (driver location → booker)
+// ---------------------------------------------------------------------------
 
 export type RideLocation = {
   ride: string;
@@ -46,9 +48,6 @@ export async function subscribeToRide(
   const sock = await getSocket();
   sock.emit("subscribe", { doctype: "Ride", docname: rideId });
   sock.emit("doc_subscribe", { doctype: "Ride", docname: rideId });
-  // Frappe's publish_realtime(room=...) translates into an event on the
-  // server-side namespace; the socket.io client receives it as a top-level
-  // event named after the `event=` param.
   const locHandler = (msg: RideLocation) => {
     if (msg && msg.ride === rideId) onLocation(msg);
   };
@@ -62,4 +61,64 @@ export async function subscribeToRide(
     sock.off("rideshare:status", statusHandler);
     sock.emit("unsubscribe", { doctype: "Ride", docname: rideId });
   };
+}
+
+// ---------------------------------------------------------------------------
+// Chat — pushed by `Chat Message.after_insert` on the server
+// ---------------------------------------------------------------------------
+
+export type ChatMessageEvent = {
+  name: string;
+  thread: string;
+  sender: string;
+  sender_role: "Driver" | "Passenger" | "Support" | "System";
+  body: string;
+  sent_at: string | null;
+  is_system: boolean;
+};
+
+export async function subscribeToThread(
+  threadName: string,
+  onMessage: (msg: ChatMessageEvent) => void
+): Promise<() => void> {
+  const sock = await getSocket();
+  // Frappe's `publish_realtime(room=...)` requires the client to be a
+  // member of that room.  We subscribe both the doctype-shaped room and
+  // the bare `chat:<name>` room so it works on either nginx config.
+  sock.emit("subscribe", { doctype: "Chat Thread", docname: threadName });
+  sock.emit("doc_subscribe", { doctype: "Chat Thread", docname: threadName });
+
+  const handler = (msg: ChatMessageEvent) => {
+    if (msg && msg.thread === threadName) onMessage(msg);
+  };
+  sock.on("rideshare:chat:message", handler);
+  return () => {
+    sock.off("rideshare:chat:message", handler);
+    sock.emit("unsubscribe", { doctype: "Chat Thread", docname: threadName });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Typing indicator — fire-and-forget realtime hint that the other party is
+// composing a message.  The backend pushes events on the per-user room so we
+// only get a payload when the *other* side is typing.
+// ---------------------------------------------------------------------------
+
+export type TypingEvent = {
+  thread: string;
+  sender: string;
+  sender_role: "Driver" | "Passenger" | "Support" | "Unknown";
+  is_typing: boolean;
+};
+
+export async function subscribeToTyping(
+  threadName: string,
+  onTyping: (evt: TypingEvent) => void
+): Promise<() => void> {
+  const sock = await getSocket();
+  const handler = (msg: TypingEvent) => {
+    if (msg && msg.thread === threadName) onTyping(msg);
+  };
+  sock.on("rideshare:chat:typing", handler);
+  return () => sock.off("rideshare:chat:typing", handler);
 }

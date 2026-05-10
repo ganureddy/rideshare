@@ -10,7 +10,7 @@ from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import get_datetime, now_datetime
+from frappe.utils import now_datetime
 
 
 @frappe.whitelist()
@@ -25,7 +25,8 @@ def home_dashboard() -> dict[str, Any]:
 	upcoming_bookings = frappe.db.sql(
 		"""SELECT b.name, b.ride, b.status, b.seats_booked, b.total_amount,
 		          r.origin_city, r.destination_city, r.departure_datetime,
-		          r.driver, r.status AS ride_status
+		          r.driver, r.status AS ride_status,
+		          r.price_per_seat
 		   FROM `tabBooking` b
 		   JOIN `tabRide` r ON r.name = b.ride
 		   WHERE b.passenger = %(u)s
@@ -102,34 +103,276 @@ def ride_summary(ride: str) -> dict[str, Any]:
 			"price_per_seat", "currency",
 			"instant_booking", "women_only", "max_2_back",
 			"description", "cancellation_policy",
+			"current_lat", "current_lng", "last_location_at",
 		],
 		as_dict=True,
 	)
 	if not r:
 		frappe.throw(_("Ride not found."))
 
+	# Ride Waypoint columns: sequence, city, lat, lng, pickup_offset_minutes.
+	# Frontend consumed `stop_order` historically — alias it for compatibility.
 	waypoints = frappe.get_all(
 		"Ride Waypoint",
 		filters={"parent": ride},
-		fields=["city", "address", "lat", "lng", "stop_order", "estimated_arrival"],
-		order_by="stop_order asc",
+		fields=[
+			"sequence as stop_order",
+			"city",
+			"lat",
+			"lng",
+			"pickup_offset_minutes",
+		],
+		order_by="sequence asc",
 	)
 
 	driver_user = frappe.db.get_value(
-		"User", r.driver, ["full_name", "user_image"], as_dict=True
+		"User", r.driver, ["full_name", "user_image", "first_name"], as_dict=True
 	) or {}
 	driver_profile = frappe.db.get_value(
 		"Driver Profile",
 		{"user": r.driver},
-		["name", "is_verified", "verification_status", "rating_avg", "rating_count", "bio"],
+		[
+			"name",
+			"is_verified",
+			"verification_status",
+			"avg_rating",
+			"total_reviews",
+			"total_trips",
+			"bio",
+			"license_number",
+			"license_expiry",
+			"preferences_smoking",
+			"preferences_pets",
+			"preferences_music",
+			"preferences_chat",
+		],
 		as_dict=True,
 	) or {}
+
+	# Vehicle details — booker wants to know what car they're getting into.
+	# license_plate is a Password field; presence is enough for the booker UI.
+	vehicle_doc = frappe.db.get_value(
+		"Vehicle",
+		r.vehicle,
+		["name", "make", "model", "year", "color", "seats_available", "is_verified"],
+		as_dict=True,
+	) or {}
+	has_plate = 0
+	if vehicle_doc.get("name"):
+		has_plate = 1 if frappe.db.get_value("Vehicle", vehicle_doc["name"], "license_plate") else 0
+	# license_number on Driver Profile is also stored encrypted.
+	has_license = 0
+	if driver_profile.get("name"):
+		has_license = (
+			1 if frappe.db.get_value("Driver Profile", driver_profile["name"], "license_number") else 0
+		)
 
 	r["waypoints"] = waypoints
 	r["driver_display"] = {
 		"user": r.driver,
-		"name": driver_user.get("full_name"),
+		"name": driver_user.get("full_name") or driver_user.get("first_name") or "Driver",
 		"image": driver_user.get("user_image"),
-		**driver_profile,
+		"is_verified": bool(driver_profile.get("is_verified") or 0),
+		"verification_status": driver_profile.get("verification_status"),
+		"rating_avg": float(driver_profile.get("avg_rating") or 0),
+		"rating_count": int(driver_profile.get("total_reviews") or 0),
+		"total_trips": int(driver_profile.get("total_trips") or 0),
+		"bio": driver_profile.get("bio"),
+		"has_license": bool(has_license),
+		"license_expiry": (
+			driver_profile.get("license_expiry").isoformat()
+			if driver_profile.get("license_expiry")
+			else None
+		),
 	}
+	r["preferences"] = {
+		"music": driver_profile.get("preferences_music") or "Some",
+		"chat": driver_profile.get("preferences_chat") or "Some",
+		"smoking_ok": bool(driver_profile.get("preferences_smoking") or 0),
+		"pets_ok": bool(driver_profile.get("preferences_pets") or 0),
+	}
+	r["vehicle_details"] = {
+		"name": vehicle_doc.get("name"),
+		"make": vehicle_doc.get("make"),
+		"model": vehicle_doc.get("model"),
+		"year": vehicle_doc.get("year"),
+		"color": vehicle_doc.get("color"),
+		"seats": vehicle_doc.get("seats_available"),
+		"has_plate": bool(has_plate),
+		"is_verified": bool(vehicle_doc.get("is_verified") or 0),
+	}
+
+	# Whether the calling user has already booked this ride — useful for the
+	# detail screen to swap the CTA between "Book a seat" and "View booking".
+	booking = frappe.db.get_value(
+		"Booking",
+		{"ride": ride, "passenger": user},
+		["name", "status", "payment_status", "seats_booked", "total_amount"],
+		as_dict=True,
+	)
+	r["my_booking"] = booking
+	r["am_i_driver"] = r.driver == user
+
+	# Contact details — only revealed once a booking actually exists between
+	# the parties.  The driver sees every confirmed passenger's name + phone;
+	# a passenger sees the driver's name + phone once their booking is
+	# Confirmed (i.e. payment captured).
+	r["contacts"] = _ride_contacts(ride, r.driver, user, booking)
 	return r
+
+
+def _ride_contacts(
+	ride: str, driver: str, viewer: str, my_booking: dict | None
+) -> dict[str, Any]:
+	"""Return the set of contact details the ``viewer`` is allowed to see.
+
+	Phone numbers are gated by the existence of a confirmed booking between
+	the two parties — never leak a driver's phone to a passenger who hasn't
+	paid, or a passenger's phone to anyone other than their booked driver.
+	"""
+
+	out: dict[str, Any] = {"driver": None, "passengers": []}
+
+	driver_user = frappe.db.get_value(
+		"User", driver, ["full_name", "first_name", "mobile_no"], as_dict=True
+	) or {}
+	driver_label = (
+		driver_user.get("full_name") or driver_user.get("first_name") or "Driver"
+	)
+
+	am_i_driver = viewer == driver
+	# A passenger sees the driver's number once their booking is Confirmed.
+	passenger_can_see_driver = bool(
+		my_booking and my_booking.get("status") == "Confirmed"
+	)
+	driver_phone = driver_user.get("mobile_no") if (
+		am_i_driver or passenger_can_see_driver
+	) else None
+	out["driver"] = {
+		"name": driver_label,
+		"mobile_no": driver_phone,
+		"can_call": bool(driver_phone),
+	}
+
+	if am_i_driver:
+		# Driver sees every confirmed booker for this ride.
+		rows = frappe.db.sql(
+			"""SELECT b.name AS booking, b.passenger, b.seats_booked,
+			          b.status,
+			          u.full_name, u.first_name, u.mobile_no
+			   FROM `tabBooking` b
+			   JOIN `tabUser` u ON u.name = b.passenger
+			   WHERE b.ride = %(r)s AND b.status = 'Confirmed'
+			   ORDER BY b.booked_on ASC""",
+			{"r": ride},
+			as_dict=True,
+		)
+		out["passengers"] = [
+			{
+				"booking": p["booking"],
+				"user": p["passenger"],
+				"name": p["full_name"] or p["first_name"] or "Passenger",
+				"mobile_no": p["mobile_no"],
+				"seats_booked": int(p["seats_booked"] or 0),
+			}
+			for p in rows
+		]
+	return out
+
+
+@frappe.whitelist()
+def trip_history(limit: int = 50) -> dict[str, Any]:
+	"""Return ALL past bookings (as passenger) and rides (as driver).
+
+	The Trips screen calls ``home_dashboard`` for upcoming items; this is
+	the companion call for the History view.  Because bookings and rides
+	are keyed on the user (mobile-derived ID), uninstalling the app and
+	logging back in with the same number returns the same history.
+	"""
+
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	limit = int(limit or 50)
+
+	past_bookings = frappe.db.sql(
+		"""SELECT b.name, b.ride, b.status, b.seats_booked, b.total_amount,
+		          b.payment_status,
+		          r.origin_city, r.destination_city, r.departure_datetime,
+		          r.driver, r.status AS ride_status,
+		          r.price_per_seat
+		   FROM `tabBooking` b
+		   JOIN `tabRide` r ON r.name = b.ride
+		   WHERE b.passenger = %(u)s
+		     AND (
+		       r.status IN ('Completed', 'Cancelled')
+		       OR b.status = 'Cancelled'
+		       OR r.departure_datetime < NOW() - INTERVAL 1 DAY
+		     )
+		   ORDER BY r.departure_datetime DESC
+		   LIMIT %(limit)s""",
+		{"u": user, "limit": limit},
+		as_dict=True,
+	)
+
+	past_rides = frappe.db.sql(
+		"""SELECT name, origin_city, destination_city, departure_datetime,
+		          status, seats_total, seats_available, price_per_seat
+		   FROM `tabRide`
+		   WHERE driver = %(u)s
+		     AND (
+		       status IN ('Completed', 'Cancelled')
+		       OR departure_datetime < NOW() - INTERVAL 1 DAY
+		     )
+		   ORDER BY departure_datetime DESC
+		   LIMIT %(limit)s""",
+		{"u": user, "limit": limit},
+		as_dict=True,
+	)
+
+	return {
+		"user": user,
+		"past_bookings": past_bookings,
+		"past_rides": past_rides,
+	}
+
+
+@frappe.whitelist()
+def my_vehicles_summary() -> dict[str, Any]:
+	"""Lightweight payload for the in-app driver onboarding screen."""
+
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	vehicles = frappe.get_all(
+		"Vehicle",
+		filters={"owner_user": user},
+		fields=["name", "make", "model", "year", "color", "seats_available", "is_verified"],
+		order_by="creation desc",
+	)
+	driver_profile = frappe.db.get_value(
+		"Driver Profile",
+		{"user": user},
+		[
+			"name",
+			"is_verified",
+			"verification_status",
+			"bio",
+			"full_name",
+			"license_expiry",
+			"preferences_music",
+			"preferences_chat",
+			"preferences_smoking",
+			"preferences_pets",
+		],
+		as_dict=True,
+	)
+	if driver_profile and driver_profile.get("license_expiry"):
+		driver_profile["license_expiry"] = driver_profile["license_expiry"].isoformat()
+	return {
+		"vehicles": vehicles,
+		"driver_profile": driver_profile,
+		"can_publish": bool(driver_profile) and bool(vehicles),
+	}
