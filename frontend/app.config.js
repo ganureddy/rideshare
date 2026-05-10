@@ -4,7 +4,7 @@
 // In CI/EAS, set these via `eas secret:create`. In local dev, copy
 // .env.example to .env and `npx expo start --clear`.
 
-require("dotenv").config();
+try { require("dotenv").config(); } catch (e) {}
 
 /** @type {(ctx: { config: any }) => any} */
 module.exports = ({ config }) => {
