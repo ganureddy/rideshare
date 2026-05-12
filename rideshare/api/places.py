@@ -25,6 +25,7 @@ from frappe.rate_limiter import rate_limit
 GOOGLE_AC_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
 GOOGLE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+OPENCAGE_GEOCODE_URL = "https://api.opencagedata.com/geocode/v1/json"
 DEFAULT_TIMEOUT = 6  # seconds — Google p95 is well under this
 
 
@@ -40,8 +41,20 @@ def _api_key() -> str:
 	return key
 
 
+def _opencage_key() -> str:
+	key = frappe.utils.password.get_decrypted_password(
+		"Rideshare Settings", "Rideshare Settings", "opencage_api_key", raise_exception=False
+	)
+	if not key:
+		frappe.throw(
+			_("OpenCage API key is not configured. Set it in Rideshare Settings."),
+			frappe.ValidationError,
+		)
+	return key
+
+
 def _provider() -> str:
-	return frappe.db.get_single_value("Rideshare Settings", "maps_provider") or "Google"
+	return frappe.db.get_single_value("Rideshare Settings", "maps_provider") or "OpenCage"
 
 
 @frappe.whitelist(allow_guest=True)
@@ -67,8 +80,10 @@ def autocomplete(
 	if len(q) < 2:
 		return {"predictions": []}
 
-	if _provider() != "Google":
-		# OSM/Mapbox fallback path — implement when we flip the flag.
+	provider = _provider()
+	if provider == "OpenCage":
+		return _opencage_autocomplete(q, country, lat, lng)
+	if provider != "Google":
 		return _osm_autocomplete(q, country, lat, lng)
 
 	params: dict[str, Any] = {
@@ -121,8 +136,13 @@ def place_details(place_id: str, session_token: str | None = None) -> dict[str, 
 	if not place_id:
 		frappe.throw(_("place_id is required."), frappe.ValidationError)
 
-	if _provider() != "Google":
-		frappe.throw(_("place_details requires Google provider."))
+	provider = _provider()
+	if provider == "OpenCage":
+		# OpenCage is a single-call provider: the "place_id" is actually our
+		# encoded "lat,lng" tuple from the autocomplete step.
+		return _opencage_place_details(place_id)
+	if provider != "Google":
+		frappe.throw(_("place_details requires Google or OpenCage provider."))
 
 	params: dict[str, Any] = {
 		"place_id": place_id,
@@ -159,11 +179,18 @@ def place_details(place_id: str, session_token: str | None = None) -> dict[str, 
 @frappe.whitelist(allow_guest=True)
 @rate_limit(limit=60, seconds=60)
 def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
-	"""Resolve a coordinate pair into a postal address (used by the
-	'use my current location' button)."""
+	"""Resolve a coordinate pair into a postal address.
 
-	if _provider() != "Google":
-		frappe.throw(_("reverse_geocode requires Google provider."))
+	Used by the "use my current location" button on the search/publish
+	screens AND by the live-tracking screen to label the driver's last
+	known position.  Provider-routed via Rideshare Settings.maps_provider.
+	"""
+
+	provider = _provider()
+	if provider == "OpenCage":
+		return _opencage_reverse_geocode(float(lat), float(lng))
+	if provider != "Google":
+		frappe.throw(_("reverse_geocode requires Google or OpenCage provider."))
 
 	params = {
 		"latlng": f"{float(lat)},{float(lng)}",
@@ -197,6 +224,135 @@ def _extract_component(result: dict, type_name: str) -> str | None:
 		if type_name in (comp.get("types") or []):
 			return comp.get("long_name")
 	return None
+
+
+# ---------------------------------------------------------------------------
+# OpenCage adapter — preferred for India-first deployments.  One endpoint
+# does both forward and reverse geocoding; the API key never ships in the
+# mobile bundle, mirroring the Google flow.
+# ---------------------------------------------------------------------------
+
+
+def _opencage_call(params: dict[str, Any]) -> list[dict]:
+	full_params = {"key": _opencage_key(), "no_annotations": 1, "limit": 8, **params}
+	try:
+		resp = requests.get(OPENCAGE_GEOCODE_URL, params=full_params, timeout=DEFAULT_TIMEOUT)
+		resp.raise_for_status()
+	except requests.RequestException as exc:
+		frappe.log_error(message=str(exc), title="OpenCage call failed")
+		frappe.throw(_("Map service unavailable. Please try again."))
+	data = resp.json()
+	if data.get("status", {}).get("code") not in (200, None):
+		frappe.log_error(message=str(data), title="OpenCage error")
+		return []
+	return data.get("results") or []
+
+
+def _opencage_pred(r: dict) -> dict[str, Any]:
+	"""Shape an OpenCage result like a Google Places prediction so the
+	mobile app can consume both providers without branching."""
+
+	g = r.get("geometry") or {}
+	c = r.get("components") or {}
+	lat = g.get("lat")
+	lng = g.get("lng")
+	primary = (
+		c.get("road")
+		or c.get("neighbourhood")
+		or c.get("suburb")
+		or c.get("village")
+		or c.get("town")
+		or c.get("city")
+		or c.get("county")
+		or c.get("state_district")
+		or c.get("state")
+		or r.get("formatted")
+	)
+	secondary_parts = [
+		c.get("suburb") if primary != c.get("suburb") else None,
+		c.get("city") if primary != c.get("city") else None,
+		c.get("state_district") if primary != c.get("state_district") else None,
+		c.get("state") if primary != c.get("state") else None,
+		c.get("country") if c.get("country") and c.get("country") != "India" else None,
+	]
+	secondary = ", ".join([p for p in secondary_parts if p]) or r.get("formatted")
+	return {
+		# Encode the coordinate so place_details is a no-op round trip.
+		"place_id": f"oc:{lat},{lng}" if lat is not None and lng is not None else r.get("formatted"),
+		"description": r.get("formatted"),
+		"primary_text": primary,
+		"secondary_text": secondary,
+		"types": [],
+		"_oc": {"lat": lat, "lng": lng, "components": c},
+	}
+
+
+def _opencage_autocomplete(
+	q: str, country: str, lat: float | None, lng: float | None
+) -> dict[str, Any]:
+	params: dict[str, Any] = {
+		"q": q,
+		"countrycode": (country or "in").lower(),
+		"language": "en",
+	}
+	if lat is not None and lng is not None:
+		params["proximity"] = f"{lat},{lng}"
+	results = _opencage_call(params)
+	return {"predictions": [_opencage_pred(r) for r in results]}
+
+
+def _opencage_place_details(place_id: str) -> dict[str, Any]:
+	"""``place_id`` here is "oc:lat,lng" emitted by ``_opencage_pred``.
+	Fall back to a forward geocode if it's free-text."""
+
+	if place_id.startswith("oc:"):
+		try:
+			lat_s, lng_s = place_id[3:].split(",")
+			lat, lng = float(lat_s), float(lng_s)
+		except (ValueError, AttributeError):
+			frappe.throw(_("Invalid place reference."))
+		return _opencage_reverse_geocode(lat, lng)
+	results = _opencage_call({"q": place_id, "limit": 1})
+	if not results:
+		frappe.throw(_("Could not resolve that place."))
+	r = results[0]
+	g = r.get("geometry") or {}
+	c = r.get("components") or {}
+	return {
+		"place_id": place_id,
+		"name": c.get("city") or c.get("town") or c.get("village"),
+		"address": r.get("formatted"),
+		"lat": g.get("lat"),
+		"lng": g.get("lng"),
+		"city": c.get("city") or c.get("town") or c.get("village") or c.get("county"),
+		"state": c.get("state"),
+		"country": c.get("country"),
+	}
+
+
+def _opencage_reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
+	results = _opencage_call({"q": f"{lat}+{lng}", "limit": 1})
+	if not results:
+		return {"address": None, "lat": lat, "lng": lng}
+	r = results[0]
+	c = r.get("components") or {}
+	return {
+		"address": r.get("formatted"),
+		"place_id": f"oc:{lat},{lng}",
+		"lat": lat,
+		"lng": lng,
+		"city": c.get("city")
+		or c.get("town")
+		or c.get("village")
+		or c.get("county")
+		or c.get("state_district"),
+		"state": c.get("state"),
+		"country": c.get("country"),
+		"area": c.get("residential")
+		or c.get("neighbourhood")
+		or c.get("suburb")
+		or c.get("road"),
+	}
 
 
 def _osm_autocomplete(

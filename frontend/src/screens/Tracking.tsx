@@ -2,11 +2,14 @@
 //
 // Two roles:
 //  • Passenger: subscribes to ride:<id> via Socket.IO; falls back to a
-//    5s REST poll when the socket disconnects.
-//  • Driver:  uses expo-location's foreground watchPositionAsync to
-//    push fixes via /push_location every 5s while the screen is open.
-//    For real production background tracking, replace with a TaskManager
-//    background task — wired in `services/backgroundLocation.ts` (TODO).
+//    polling cycle when the socket drops.
+//  • Driver:  watches GPS continuously (smooth on-screen marker), but
+//    only POSTs ``push_location`` once a minute — a deliberate choice to
+//    keep mobile-data + battery cost low while still meeting the "where
+//    is my driver right now?" UX bar.
+//
+// For background tracking (app minimised), wire the same `pushFix` call
+// into a TaskManager task — stub at `services/backgroundLocation.ts`.
 
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -15,7 +18,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
-  Alert
+  Alert,
+  Animated,
+  Easing
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
@@ -29,8 +34,11 @@ import type { RootStackParamList } from "@/navigation/RootNavigator";
 
 type Route = RouteProp<RootStackParamList, "Tracking">;
 
-const PUSH_INTERVAL_MS = 5000;
-const POLL_INTERVAL_MS = 5000;
+// 1 minute — matches the product spec ("update every 1 min where he is").
+const PUSH_INTERVAL_MS = 60_000;
+// Passenger polling can be a bit slower than realtime — when sockets are
+// up we get instant updates anyway.
+const POLL_INTERVAL_MS = 30_000;
 
 type Endpoints = {
   origin?: { lat: number; lng: number } | null;
@@ -119,6 +127,21 @@ export function TrackingScreen() {
           );
           return;
         }
+
+        async function pushFix() {
+          const f = lastFix.current;
+          if (!f) return;
+          try {
+            await call("rideshare.api.tracking.push_location", {
+              ride: params.rideId,
+              lat: f.lat,
+              lng: f.lng,
+              heading: f.heading,
+              speed_kmh: f.speed != null ? f.speed * 3.6 : undefined
+            });
+          } catch {/* retry next tick */}
+        }
+
         watchRef.current = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.High,
@@ -126,6 +149,7 @@ export function TrackingScreen() {
             distanceInterval: 10
           },
           (pos) => {
+            const isFirstFix = lastFix.current == null;
             lastFix.current = {
               lat: pos.coords.latitude,
               lng: pos.coords.longitude,
@@ -141,21 +165,13 @@ export function TrackingScreen() {
               at: new Date().toISOString()
             });
             setStaleSeconds(0);
+            // Push the very first fix immediately so passengers see the car
+            // appear on the map without waiting up to a minute.
+            if (isFirstFix) pushFix();
           }
         );
-        pushRef.current = setInterval(async () => {
-          const f = lastFix.current;
-          if (!f) return;
-          try {
-            await call("rideshare.api.tracking.push_location", {
-              ride: params.rideId,
-              lat: f.lat,
-              lng: f.lng,
-              heading: f.heading,
-              speed_kmh: f.speed != null ? f.speed * 3.6 : undefined
-            });
-          } catch {/* retry next tick */}
-        }, PUSH_INTERVAL_MS);
+        // Then heartbeat every minute.
+        pushRef.current = setInterval(pushFix, PUSH_INTERVAL_MS);
       }
     }
 
@@ -251,9 +267,7 @@ export function TrackingScreen() {
           flat
           anchor={{ x: 0.5, y: 0.5 }}
         >
-          <View style={s.driverPin}>
-            <Ionicons name="car" size={16} color={colors.primaryText} />
-          </View>
+          <CarMarker fresh={fresh} />
         </Marker>
         {endpoints.origin?.lat ? (
           <Marker
@@ -343,6 +357,46 @@ export function TrackingScreen() {
   );
 }
 
+function CarMarker({ fresh }: { fresh: boolean }) {
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1400,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true
+        })
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.8] });
+  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] });
+
+  return (
+    <View style={s.markerWrap}>
+      <Animated.View
+        style={[
+          s.pulse,
+          { transform: [{ scale }], opacity, backgroundColor: fresh ? colors.success : colors.warn }
+        ]}
+      />
+      <View style={[s.driverPin, !fresh && { backgroundColor: colors.warn }]}>
+        <Ionicons name="car-sport" size={20} color={colors.primaryText} />
+      </View>
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   shell: { flex: 1, backgroundColor: colors.bgAlt },
   topBar: { position: "absolute", left: 0, right: 0, top: 0 },
@@ -406,10 +460,17 @@ const s = StyleSheet.create({
   },
   btnText: { color: colors.primaryText, fontWeight: "700", fontSize: 14 },
 
-  driverPin: {
+  markerWrap: { width: 64, height: 64, alignItems: "center", justifyContent: "center" },
+  pulse: {
+    position: "absolute",
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: 18
+  },
+  driverPin: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.text,
     alignItems: "center",
     justifyContent: "center",

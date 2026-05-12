@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,9 @@ import {
   ActivityIndicator,
   StyleSheet,
   Alert,
-  Linking
+  Linking,
+  Animated,
+  Easing
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
@@ -15,6 +17,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import { Ionicons } from "@expo/vector-icons";
 import { call } from "@/api/client";
+import { subscribeToRide } from "@/realtime/socket";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -104,12 +107,35 @@ function fmtDate(s: string) {
     return "";
   }
 }
+function fmtRelative(s?: string) {
+  if (!s) return "just now";
+  try {
+    const ms = Date.now() - new Date(s.replace(" ", "T")).getTime();
+    const sec = Math.max(0, Math.round(ms / 1000));
+    if (sec < 30) return "just now";
+    if (sec < 90) return "1 min ago";
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min} min ago`;
+    const hrs = Math.round(min / 60);
+    return `${hrs} hr ago`;
+  } catch {
+    return "moments ago";
+  }
+}
+
+type LiveLoc = {
+  lat: number;
+  lng: number;
+  heading?: number | null;
+  at?: string;
+} | null;
 
 export function RideDetailScreen() {
   const { params } = useRoute<Route>();
   const nav = useNavigation<Nav>();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [busy, setBusy] = useState(false);
+  const [liveLoc, setLiveLoc] = useState<LiveLoc>(null);
 
   async function load() {
     try {
@@ -125,6 +151,52 @@ export function RideDetailScreen() {
   useEffect(() => {
     load();
   }, [params.rideId]);
+
+  // Live driver location: shown to a confirmed booker (or the driver
+  // themselves) when the ride is moving.  Polls every 30s as a backup
+  // for the realtime socket.
+  useEffect(() => {
+    if (!summary) return;
+    const canTrack =
+      summary.am_i_driver
+      || (summary.my_booking?.status === "Confirmed"
+        && (summary.status === "InProgress" || summary.status === "Published"));
+    if (!canTrack) return;
+
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    async function fetchLast() {
+      try {
+        const last = await call<any>("rideshare.api.tracking.get_last_location", {
+          ride: params.rideId
+        });
+        if (cancelled) return;
+        if (last?.available) {
+          setLiveLoc({ lat: last.lat, lng: last.lng, heading: last.heading, at: last.at });
+        }
+      } catch {/* ignore */}
+    }
+
+    fetchLast();
+    pollId = setInterval(fetchLast, 30_000);
+
+    (async () => {
+      try {
+        unsub = await subscribeToRide(params.rideId, (l) => {
+          if (cancelled) return;
+          setLiveLoc({ lat: l.lat, lng: l.lng, heading: l.heading, at: l.at });
+        });
+      } catch {/* socket optional */}
+    })();
+
+    return () => {
+      cancelled = true;
+      if (pollId) clearInterval(pollId);
+      if (unsub) unsub();
+    };
+  }, [summary, params.rideId]);
 
   async function book() {
     if (!summary) return;
@@ -264,7 +336,27 @@ export function RideDetailScreen() {
               strokeColor={colors.text}
               strokeWidth={3}
             />
+            {liveLoc ? (
+              <Marker
+                coordinate={{ latitude: liveLoc.lat, longitude: liveLoc.lng }}
+                rotation={liveLoc.heading ?? 0}
+                flat
+                anchor={{ x: 0.5, y: 0.5 }}
+                title={summary.am_i_driver ? "You" : "Driver"}
+              >
+                <CarPin />
+              </Marker>
+            ) : null}
           </MapView>
+
+          {liveLoc ? (
+            <View style={s.livePill}>
+              <View style={s.liveDot} />
+              <Text style={s.liveText}>
+                Live · updated {fmtRelative(liveLoc.at)}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={[s.card, shadow.card]}>
@@ -523,6 +615,35 @@ function ContactRow({
   );
 }
 
+function CarPin() {
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: 1500,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true
+      })
+    );
+    pulse.setValue(0);
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.6] });
+  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
+
+  return (
+    <View style={s.markerWrap}>
+      <Animated.View style={[s.pulse, { transform: [{ scale }], opacity }]} />
+      <View style={s.carDot}>
+        <Ionicons name="car-sport" size={18} color={colors.primaryText} />
+      </View>
+    </View>
+  );
+}
+
 function PrefPill({
   icon,
   label,
@@ -551,7 +672,47 @@ function PrefPill({
 
 const s = StyleSheet.create({
   shell: { flex: 1, backgroundColor: colors.bgAlt },
-  mapWrap: { height: 220, backgroundColor: colors.bgAlt },
+  mapWrap: { height: 220, backgroundColor: colors.bgAlt, position: "relative" },
+
+  livePill: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(0,0,0,0.78)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.success
+  },
+  liveText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+
+  markerWrap: { width: 56, height: 56, alignItems: "center", justifyContent: "center" },
+  pulse: {
+    position: "absolute",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.success
+  },
+  carDot: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.text,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderColor: "#fff",
+    ...shadow.floating
+  },
   card: {
     marginHorizontal: spacing(4),
     marginTop: spacing(3),

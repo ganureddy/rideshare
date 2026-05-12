@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,7 +8,9 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  Switch
+  Switch,
+  KeyboardAvoidingView,
+  Platform
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -64,6 +66,14 @@ type DriverState = {
   can_publish: boolean;
 };
 
+type Step = "trip" | "car" | "driver" | "prefs";
+const STEPS: { id: Step; label: string; icon: any }[] = [
+  { id: "trip", label: "Trip", icon: "navigate-outline" },
+  { id: "car", label: "Car", icon: "car-sport-outline" },
+  { id: "driver", label: "Driver", icon: "person-circle-outline" },
+  { id: "prefs", label: "Preferences", icon: "options-outline" }
+];
+
 const MUSIC_OPTIONS: Array<"Quiet" | "Some" | "Loud"> = ["Quiet", "Some", "Loud"];
 const CHAT_OPTIONS: Array<"Quiet" | "Some" | "Chatty"> = ["Quiet", "Some", "Chatty"];
 const SEAT_OPTIONS = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -73,15 +83,15 @@ export function PublishScreen() {
   const nav = useNavigation<Nav>();
   const { profile } = useAuth();
 
-  // Route
+  // Step
+  const [step, setStep] = useState<Step>("trip");
+  const scrollRef = useRef<ScrollView | null>(null);
+
+  // Trip
   const [origin, setOrigin] = useState<City | null>(null);
   const [destination, setDestination] = useState<City | null>(null);
-
-  // Departure split into Date + Time pickers; combined when sent.
   const [date, setDate] = useState<Date | null>(null);
   const [time, setTime] = useState<Date | null>(null);
-
-  // Ride options
   const [seats, setSeats] = useState(3);
   const [price, setPrice] = useState("");
   const [instant, setInstant] = useState(true);
@@ -89,7 +99,7 @@ export function PublishScreen() {
   const [description, setDescription] = useState("");
   const [suggest, setSuggest] = useState<PriceSuggest | null>(null);
 
-  // Car details
+  // Car
   const [carMake, setCarMake] = useState("");
   const [carModel, setCarModel] = useState("");
   const [carYear, setCarYear] = useState("");
@@ -97,13 +107,13 @@ export function PublishScreen() {
   const [carSeats, setCarSeats] = useState<number>(4);
   const [carPlate, setCarPlate] = useState("");
 
-  // Driver details
+  // Driver
   const [driverName, setDriverName] = useState("");
   const [driverBio, setDriverBio] = useState("");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseExpiry, setLicenseExpiry] = useState<Date | null>(null);
 
-  // Preferences (defaults per spec)
+  // Preferences
   const [prefMusic, setPrefMusic] = useState<"Quiet" | "Some" | "Loud">("Some");
   const [prefChat, setPrefChat] = useState<"Quiet" | "Some" | "Chatty">("Some");
   const [prefSmoking, setPrefSmoking] = useState(false);
@@ -156,7 +166,7 @@ export function PublishScreen() {
       const d = await call<DriverState>("rideshare.api.mobile.my_vehicles_summary");
       setDriverState(d);
     } catch {
-      /* ignore — re-checked by the publish_ride backend */
+      /* re-checked by the publish_ride backend */
     }
   }
 
@@ -173,7 +183,7 @@ export function PublishScreen() {
         setSuggest(sg);
         if (!price) setPrice(String(sg.suggested_price));
       })
-      .catch(() => {/* network blip — leave the field empty */});
+      .catch(() => {/* network blip */});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination]);
 
@@ -182,6 +192,11 @@ export function PublishScreen() {
   useEffect(() => {
     if (seats > maxRideSeats) setSeats(maxRideSeats);
   }, [maxRideSeats, seats]);
+
+  function gotoStep(next: Step) {
+    setStep(next);
+    requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: 0, animated: true }));
+  }
 
   async function becomeDriver() {
     setEnrolling(true);
@@ -197,30 +212,59 @@ export function PublishScreen() {
     }
   }
 
-  function validateBeforePublish(): string | null {
-    if (!origin || !destination) return "Add both pickup and drop locations.";
-    if (origin.id === destination.id) return "Origin and destination can't be the same city.";
-    if (!date || !time) return "Select both a date and a time.";
-    const departure = combineDateAndTime(date, time);
-    if (departure.getTime() < Date.now() - 60 * 1000) return "Departure must be in the future.";
-    if (!price || parseFloat(price) <= 0) return "Enter a price per seat.";
-    if (!carMake.trim() || !carModel.trim()) return "Add your car's make and model.";
-    if (!carYear.trim() || isNaN(parseInt(carYear)) || parseInt(carYear) < 1980 || parseInt(carYear) > CURRENT_YEAR + 1) {
-      return "Enter a valid car year.";
+  // ---- per-step validation -----------------------------------------------
+  function validateStep(s: Step): string | null {
+    if (s === "trip") {
+      if (!origin || !destination) return "Add both pickup and drop locations.";
+      if (origin.id === destination.id) return "Origin and destination can't be the same city.";
+      if (!date || !time) return "Select both a date and a time.";
+      const departure = combineDateAndTime(date, time);
+      if (departure.getTime() < Date.now() - 60 * 1000) return "Departure must be in the future.";
+      if (!price || parseFloat(price) <= 0) return "Enter a price per seat.";
     }
-    if (!carPlate.trim()) return "Add your car's license plate.";
-    if (!driverName.trim()) return "Add your full name.";
-    if (!licenseNumber.trim()) return "Add your driving licence number.";
-    if (!licenseExpiry) return "Pick your driving licence expiry date.";
-    if (licenseExpiry.getTime() < Date.now()) return "Driving licence has expired — please renew before publishing.";
+    if (s === "car") {
+      if (!carMake.trim() || !carModel.trim()) return "Add your car's make and model.";
+      if (!carYear.trim() || isNaN(parseInt(carYear)) || parseInt(carYear) < 1980 || parseInt(carYear) > CURRENT_YEAR + 1) {
+        return "Enter a valid car year.";
+      }
+      if (!carPlate.trim()) return "Add your car's license plate.";
+    }
+    if (s === "driver") {
+      if (!driverName.trim()) return "Add your full name.";
+      if (!licenseNumber.trim()) return "Add your driving licence number.";
+      if (!licenseExpiry) return "Pick your driving licence expiry date.";
+      if (licenseExpiry.getTime() < Date.now()) return "Driving licence has expired — please renew before publishing.";
+    }
     return null;
   }
 
-  async function publish() {
-    const problem = validateBeforePublish();
+  function next() {
+    const problem = validateStep(step);
     if (problem) {
       Alert.alert("Almost there", problem);
       return;
+    }
+    if (step === "trip") gotoStep("car");
+    else if (step === "car") gotoStep("driver");
+    else if (step === "driver") gotoStep("prefs");
+    else publish();
+  }
+
+  function back() {
+    if (step === "car") gotoStep("trip");
+    else if (step === "driver") gotoStep("car");
+    else if (step === "prefs") gotoStep("driver");
+  }
+
+  async function publish() {
+    // Re-run all validations one final time.
+    for (const s of ["trip", "car", "driver"] as Step[]) {
+      const problem = validateStep(s);
+      if (problem) {
+        Alert.alert("Almost there", problem);
+        gotoStep(s);
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -262,15 +306,16 @@ export function PublishScreen() {
         }
       };
       await call("rideshare.api.rides.publish_ride", { payload: JSON.stringify(payload) });
-      Alert.alert("Ride published", "Passengers can now find and book it.");
-      // Reset only the trip fields; keep car/driver/preferences populated for next time.
+      Alert.alert("Ride published 🎉", "Passengers can now find and book it.");
+      // Reset only the trip fields; keep car/driver/preferences populated.
       setOrigin(null);
       setDestination(null);
-      const next = defaultDeparture();
-      setDate(next);
-      setTime(next);
+      const nextDt = defaultDeparture();
+      setDate(nextDt);
+      setTime(nextDt);
       setPrice("");
       setDescription("");
+      setStep("trip");
       nav.navigate("Tabs" as any);
     } catch (e: any) {
       Alert.alert("Couldn't publish", e?.message ?? "Try again.");
@@ -279,7 +324,7 @@ export function PublishScreen() {
     }
   }
 
-  // Driver enrolment gate — non-drivers see the welcome screen first.
+  // Driver enrolment gate — non-drivers see a friendly welcome first.
   if (driverState && !driverState.can_publish) {
     return (
       <SafeAreaView style={s.shell} edges={["top"]}>
@@ -292,10 +337,10 @@ export function PublishScreen() {
           <View style={[s.card, shadow.card, { marginTop: spacing(4) }]}>
             <Bullet icon="cash-outline" text="Split fuel & tolls with passengers" />
             <Bullet icon="people-outline" text="Choose who joins — instant or review-first" />
-            <Bullet icon="shield-checkmark-outline" text="Live location is shared with riders only" />
+            <Bullet icon="shield-checkmark-outline" text="Live location is shared only with riders" />
 
             <TouchableOpacity
-              style={[s.btn, enrolling && { opacity: 0.6 }]}
+              style={[s.btnFull, enrolling && { opacity: 0.6 }]}
               onPress={becomeDriver}
               disabled={enrolling}
               activeOpacity={0.85}
@@ -304,7 +349,7 @@ export function PublishScreen() {
                 <ActivityIndicator color={colors.primaryText} />
               ) : (
                 <>
-                  <Text style={s.btnText}>Enrol as driver</Text>
+                  <Text style={s.btnText}>Get started</Text>
                   <Ionicons name="arrow-forward" size={18} color={colors.primaryText} />
                 </>
               )}
@@ -318,276 +363,434 @@ export function PublishScreen() {
     );
   }
 
+  const stepIndex = STEPS.findIndex((x) => x.id === step);
+  const isLastStep = step === "prefs";
+
   return (
     <SafeAreaView style={s.shell} edges={["top"]}>
-      <ScrollView
-        contentContainerStyle={{ padding: spacing(4), paddingBottom: spacing(10) }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1 }}
       >
-        <Text style={s.h1}>Publish a ride</Text>
-        <Text style={s.sub}>Tell us where you're going and what you drive.</Text>
+        <View style={s.headerWrap}>
+          <Text style={s.h1}>Publish a ride</Text>
+          <Text style={s.sub}>
+            Step {stepIndex + 1} of {STEPS.length} · {STEPS[stepIndex].label}
+          </Text>
+          <StepDots stepIndex={stepIndex} />
+        </View>
 
-        {/* TRIP */}
-        <View style={[s.card, shadow.card]}>
-          <SectionHeader icon="navigate-outline" label="Trip" />
-          <CityPicker
-            label="From"
-            value={origin}
-            onChange={setOrigin}
-            placeholder="Pickup city"
-            iconName="radio-button-on"
-            excludeId={destination?.id}
-          />
-          <CityPicker
-            label="To"
-            value={destination}
-            onChange={setDestination}
-            placeholder="Drop-off city"
-            iconName="location"
-            excludeId={origin?.id}
-          />
-
-          <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(2) }}>
-            <View style={{ flex: 1 }}>
-              <DateField label="Date" value={date} onChange={setDate} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <TimeField label="Time" value={time} onChange={setTime} />
-            </View>
-          </View>
-
-          <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(3) }}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Seats offered</Text>
-              <View style={s.seatRow}>
-                <TouchableOpacity
-                  onPress={() => setSeats(Math.max(1, seats - 1))}
-                  style={s.seatBtn}
-                  hitSlop={6}
-                >
-                  <Ionicons name="remove" size={16} color={colors.text} />
-                </TouchableOpacity>
-                <Text style={s.seatVal}>{seats}</Text>
-                <TouchableOpacity
-                  onPress={() => setSeats(Math.min(maxRideSeats, seats + 1))}
-                  style={s.seatBtn}
-                  hitSlop={6}
-                >
-                  <Ionicons name="add" size={16} color={colors.text} />
-                </TouchableOpacity>
-              </View>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Price / seat (₹)</Text>
-              <TextInput
-                style={s.boxInput}
-                value={price}
-                onChangeText={setPrice}
-                keyboardType="number-pad"
-                placeholder={suggest ? String(suggest.suggested_price) : "0"}
-                placeholderTextColor={colors.mute}
-              />
-            </View>
-          </View>
-
-          {suggest ? (
-            <View style={s.hint}>
-              <Ionicons name="sparkles-outline" size={14} color={colors.soft} />
-              <Text style={s.hintText}>
-                Suggested ₹{suggest.suggested_price} · {suggest.distance_km} km · ~
-                {suggest.duration_minutes} min · fair range ₹{suggest.min_price}–₹
-                {suggest.max_price}
-              </Text>
-            </View>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={{ padding: spacing(4), paddingBottom: spacing(12) }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {step === "trip" ? (
+            <TripStep
+              origin={origin}
+              setOrigin={setOrigin}
+              destination={destination}
+              setDestination={setDestination}
+              date={date}
+              setDate={setDate}
+              time={time}
+              setTime={setTime}
+              seats={seats}
+              setSeats={setSeats}
+              maxRideSeats={maxRideSeats}
+              price={price}
+              setPrice={setPrice}
+              suggest={suggest}
+              instant={instant}
+              setInstant={setInstant}
+              womenOnly={womenOnly}
+              setWomenOnly={setWomenOnly}
+              description={description}
+              setDescription={setDescription}
+            />
           ) : null}
 
-          <Row label="Instant booking" value={instant} onChange={setInstant} icon="flash-outline" />
-          <Row label="Women only" value={womenOnly} onChange={setWomenOnly} icon="female-outline" />
-
-          <Text style={s.label}>Notes for passengers</Text>
-          <TextInput
-            style={[s.boxInput, { height: 88, textAlignVertical: "top" }]}
-            value={description}
-            onChangeText={setDescription}
-            placeholder="Pickup spot, luggage limits, etc."
-            placeholderTextColor={colors.mute}
-            multiline
-          />
-        </View>
-
-        {/* CAR */}
-        <View style={[s.card, shadow.card, { marginTop: spacing(3) }]}>
-          <SectionHeader icon="car-sport-outline" label="Your car" />
-
-          <View style={{ flexDirection: "row", gap: spacing(3) }}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Make</Text>
-              <TextInput
-                style={s.boxInput}
-                value={carMake}
-                onChangeText={setCarMake}
-                placeholder="Maruti"
-                placeholderTextColor={colors.mute}
-                autoCapitalize="words"
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Model</Text>
-              <TextInput
-                style={s.boxInput}
-                value={carModel}
-                onChangeText={setCarModel}
-                placeholder="Swift"
-                placeholderTextColor={colors.mute}
-                autoCapitalize="words"
-              />
-            </View>
-          </View>
-
-          <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(3) }}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Year</Text>
-              <TextInput
-                style={s.boxInput}
-                value={carYear}
-                onChangeText={setCarYear}
-                placeholder={String(CURRENT_YEAR)}
-                placeholderTextColor={colors.mute}
-                keyboardType="number-pad"
-                maxLength={4}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.label}>Color</Text>
-              <TextInput
-                style={s.boxInput}
-                value={carColor}
-                onChangeText={setCarColor}
-                placeholder="White"
-                placeholderTextColor={colors.mute}
-                autoCapitalize="words"
-              />
-            </View>
-          </View>
-
-          <Text style={[s.label, { marginTop: spacing(3) }]}>Passenger seats (1–12)</Text>
-          <SeatGridPicker value={carSeats} onChange={setCarSeats} />
-
-          <Text style={[s.label, { marginTop: spacing(3) }]}>License plate</Text>
-          <TextInput
-            style={s.boxInput}
-            value={carPlate}
-            onChangeText={(t) => setCarPlate(t.toUpperCase())}
-            placeholder="DL01AB1234"
-            placeholderTextColor={colors.mute}
-            autoCapitalize="characters"
-            autoCorrect={false}
-          />
-        </View>
-
-        {/* DRIVER */}
-        <View style={[s.card, shadow.card, { marginTop: spacing(3) }]}>
-          <SectionHeader icon="person-circle-outline" label="Driver details" />
-
-          <Text style={s.label}>Full name</Text>
-          <TextInput
-            style={s.boxInput}
-            value={driverName}
-            onChangeText={setDriverName}
-            placeholder="As on your driving licence"
-            placeholderTextColor={colors.mute}
-            autoCapitalize="words"
-          />
-
-          <Text style={[s.label, { marginTop: spacing(3) }]}>Bio (optional)</Text>
-          <TextInput
-            style={[s.boxInput, { height: 72, textAlignVertical: "top" }]}
-            value={driverBio}
-            onChangeText={setDriverBio}
-            placeholder="Tell passengers a bit about yourself."
-            placeholderTextColor={colors.mute}
-            multiline
-          />
-
-          <Text style={[s.label, { marginTop: spacing(3) }]}>Driving licence number</Text>
-          <TextInput
-            style={s.boxInput}
-            value={licenseNumber}
-            onChangeText={setLicenseNumber}
-            placeholder="e.g. DL-1420110012345"
-            placeholderTextColor={colors.mute}
-            autoCapitalize="characters"
-            autoCorrect={false}
-          />
-
-          <View style={{ marginTop: spacing(3) }}>
-            <DateField
-              label="Licence expiry"
-              value={licenseExpiry}
-              onChange={setLicenseExpiry}
-              minimumDate={new Date()}
+          {step === "car" ? (
+            <CarStep
+              carMake={carMake} setCarMake={setCarMake}
+              carModel={carModel} setCarModel={setCarModel}
+              carYear={carYear} setCarYear={setCarYear}
+              carColor={carColor} setCarColor={setCarColor}
+              carSeats={carSeats} setCarSeats={setCarSeats}
+              carPlate={carPlate} setCarPlate={setCarPlate}
             />
-          </View>
+          ) : null}
+
+          {step === "driver" ? (
+            <DriverStep
+              driverName={driverName} setDriverName={setDriverName}
+              driverBio={driverBio} setDriverBio={setDriverBio}
+              licenseNumber={licenseNumber} setLicenseNumber={setLicenseNumber}
+              licenseExpiry={licenseExpiry} setLicenseExpiry={setLicenseExpiry}
+            />
+          ) : null}
+
+          {step === "prefs" ? (
+            <PrefsStep
+              prefMusic={prefMusic} setPrefMusic={setPrefMusic}
+              prefChat={prefChat} setPrefChat={setPrefChat}
+              prefSmoking={prefSmoking} setPrefSmoking={setPrefSmoking}
+              prefPets={prefPets} setPrefPets={setPrefPets}
+            />
+          ) : null}
+        </ScrollView>
+
+        <View style={s.footer}>
+          {step !== "trip" ? (
+            <TouchableOpacity style={s.backBtn} onPress={back} activeOpacity={0.8}>
+              <Ionicons name="chevron-back" size={18} color={colors.text} />
+              <Text style={s.backBtnText}>Back</Text>
+            </TouchableOpacity>
+          ) : <View style={{ width: 90 }} />}
+          <TouchableOpacity
+            style={[s.nextBtn, busy && { opacity: 0.6 }]}
+            onPress={next}
+            disabled={busy}
+            activeOpacity={0.85}
+          >
+            {busy ? (
+              <ActivityIndicator color={colors.primaryText} />
+            ) : (
+              <>
+                <Text style={s.nextBtnText}>{isLastStep ? "Publish ride" : "Continue"}</Text>
+                <Ionicons
+                  name={isLastStep ? "checkmark" : "arrow-forward"}
+                  size={18}
+                  color={colors.primaryText}
+                />
+              </>
+            )}
+          </TouchableOpacity>
         </View>
-
-        {/* PREFERENCES */}
-        <View style={[s.card, shadow.card, { marginTop: spacing(3) }]}>
-          <SectionHeader icon="options-outline" label="Preferences" />
-
-          <Text style={s.label}>Music</Text>
-          <SegmentPicker
-            options={MUSIC_OPTIONS as readonly string[]}
-            value={prefMusic}
-            onChange={(v) => setPrefMusic(v as "Quiet" | "Some" | "Loud")}
-          />
-
-          <Text style={[s.label, { marginTop: spacing(3) }]}>Chat</Text>
-          <SegmentPicker
-            options={CHAT_OPTIONS as readonly string[]}
-            value={prefChat}
-            onChange={(v) => setPrefChat(v as "Quiet" | "Some" | "Chatty")}
-          />
-
-          <Row
-            label="Smoking OK"
-            value={prefSmoking}
-            onChange={setPrefSmoking}
-            icon="flame-outline"
-          />
-          <Row
-            label="Pets OK"
-            value={prefPets}
-            onChange={setPrefPets}
-            icon="paw-outline"
-          />
-        </View>
-
-        <TouchableOpacity
-          style={[s.btn, busy && { opacity: 0.6 }]}
-          onPress={publish}
-          disabled={busy}
-          activeOpacity={0.85}
-        >
-          {busy ? (
-            <ActivityIndicator color={colors.primaryText} />
-          ) : (
-            <>
-              <Text style={s.btnText}>Publish ride</Text>
-              <Ionicons name="checkmark" size={18} color={colors.primaryText} />
-            </>
-          )}
-        </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-function SectionHeader({ icon, label }: { icon: any; label: string }) {
+// ---------------------------------------------------------------------------
+// Step components
+// ---------------------------------------------------------------------------
+
+function TripStep(props: {
+  origin: City | null; setOrigin: (c: City | null) => void;
+  destination: City | null; setDestination: (c: City | null) => void;
+  date: Date | null; setDate: (d: Date | null) => void;
+  time: Date | null; setTime: (d: Date | null) => void;
+  seats: number; setSeats: (n: number) => void; maxRideSeats: number;
+  price: string; setPrice: (s: string) => void;
+  suggest: PriceSuggest | null;
+  instant: boolean; setInstant: (b: boolean) => void;
+  womenOnly: boolean; setWomenOnly: (b: boolean) => void;
+  description: string; setDescription: (s: string) => void;
+}) {
   return (
-    <View style={s.sectionHead}>
-      <Ionicons name={icon} size={16} color={colors.text} />
-      <Text style={s.sectionHeadText}>{label}</Text>
+    <View style={[s.card, shadow.card]}>
+      <CityPicker
+        label="From *"
+        value={props.origin}
+        onChange={props.setOrigin}
+        placeholder="Pickup city"
+        iconName="radio-button-on"
+        excludeId={props.destination?.id}
+      />
+      <CityPicker
+        label="To *"
+        value={props.destination}
+        onChange={props.setDestination}
+        placeholder="Drop-off city"
+        iconName="location"
+        excludeId={props.origin?.id}
+      />
+
+      <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(2) }}>
+        <View style={{ flex: 1 }}>
+          <DateField label="Date *" value={props.date} onChange={props.setDate} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <TimeField label="Time *" value={props.time} onChange={props.setTime} />
+        </View>
+      </View>
+
+      <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(3) }}>
+        <View style={{ flex: 1 }}>
+          <FieldLabel required>Seats offered</FieldLabel>
+          <View style={s.seatRow}>
+            <TouchableOpacity
+              onPress={() => props.setSeats(Math.max(1, props.seats - 1))}
+              style={s.seatBtn}
+              hitSlop={6}
+            >
+              <Ionicons name="remove" size={16} color={colors.text} />
+            </TouchableOpacity>
+            <Text style={s.seatVal}>{props.seats}</Text>
+            <TouchableOpacity
+              onPress={() => props.setSeats(Math.min(props.maxRideSeats, props.seats + 1))}
+              style={s.seatBtn}
+              hitSlop={6}
+            >
+              <Ionicons name="add" size={16} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={{ flex: 1 }}>
+          <FieldLabel required>Price / seat (₹)</FieldLabel>
+          <TextInput
+            style={s.boxInput}
+            value={props.price}
+            onChangeText={props.setPrice}
+            keyboardType="number-pad"
+            placeholder={props.suggest ? String(props.suggest.suggested_price) : "0"}
+            placeholderTextColor={colors.mute}
+          />
+        </View>
+      </View>
+
+      {props.suggest ? (
+        <View style={s.hint}>
+          <Ionicons name="sparkles-outline" size={14} color={colors.soft} />
+          <Text style={s.hintText}>
+            Suggested ₹{props.suggest.suggested_price} · {props.suggest.distance_km} km · ~
+            {props.suggest.duration_minutes} min · fair range ₹{props.suggest.min_price}–₹
+            {props.suggest.max_price}
+          </Text>
+        </View>
+      ) : null}
+
+      <Toggle label="Instant booking" value={props.instant} onChange={props.setInstant} icon="flash-outline" />
+      <Toggle label="Women only" value={props.womenOnly} onChange={props.setWomenOnly} icon="female-outline" />
+
+      <FieldLabel>Notes for passengers</FieldLabel>
+      <TextInput
+        style={[s.boxInput, { height: 88, textAlignVertical: "top" }]}
+        value={props.description}
+        onChangeText={props.setDescription}
+        placeholder="Pickup spot, luggage limits, etc."
+        placeholderTextColor={colors.mute}
+        multiline
+      />
+    </View>
+  );
+}
+
+function CarStep(props: {
+  carMake: string; setCarMake: (s: string) => void;
+  carModel: string; setCarModel: (s: string) => void;
+  carYear: string; setCarYear: (s: string) => void;
+  carColor: string; setCarColor: (s: string) => void;
+  carSeats: number; setCarSeats: (n: number) => void;
+  carPlate: string; setCarPlate: (s: string) => void;
+}) {
+  return (
+    <View style={[s.card, shadow.card]}>
+      <View style={{ flexDirection: "row", gap: spacing(3) }}>
+        <View style={{ flex: 1 }}>
+          <FieldLabel required>Make</FieldLabel>
+          <TextInput
+            style={s.boxInput}
+            value={props.carMake}
+            onChangeText={props.setCarMake}
+            placeholder="Maruti"
+            placeholderTextColor={colors.mute}
+            autoCapitalize="words"
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <FieldLabel required>Model</FieldLabel>
+          <TextInput
+            style={s.boxInput}
+            value={props.carModel}
+            onChangeText={props.setCarModel}
+            placeholder="Swift"
+            placeholderTextColor={colors.mute}
+            autoCapitalize="words"
+          />
+        </View>
+      </View>
+
+      <View style={{ flexDirection: "row", gap: spacing(3), marginTop: spacing(3) }}>
+        <View style={{ flex: 1 }}>
+          <FieldLabel required>Year</FieldLabel>
+          <TextInput
+            style={s.boxInput}
+            value={props.carYear}
+            onChangeText={props.setCarYear}
+            placeholder={String(CURRENT_YEAR)}
+            placeholderTextColor={colors.mute}
+            keyboardType="number-pad"
+            maxLength={4}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <FieldLabel>Color</FieldLabel>
+          <TextInput
+            style={s.boxInput}
+            value={props.carColor}
+            onChangeText={props.setCarColor}
+            placeholder="White"
+            placeholderTextColor={colors.mute}
+            autoCapitalize="words"
+          />
+        </View>
+      </View>
+
+      <FieldLabel required style={{ marginTop: spacing(3) }}>
+        Passenger seats (1–12)
+      </FieldLabel>
+      <SeatGridPicker value={props.carSeats} onChange={props.setCarSeats} />
+
+      <FieldLabel required style={{ marginTop: spacing(3) }}>License plate</FieldLabel>
+      <TextInput
+        style={s.boxInput}
+        value={props.carPlate}
+        onChangeText={(t) => props.setCarPlate(t.toUpperCase())}
+        placeholder="DL01AB1234"
+        placeholderTextColor={colors.mute}
+        autoCapitalize="characters"
+        autoCorrect={false}
+      />
+    </View>
+  );
+}
+
+function DriverStep(props: {
+  driverName: string; setDriverName: (s: string) => void;
+  driverBio: string; setDriverBio: (s: string) => void;
+  licenseNumber: string; setLicenseNumber: (s: string) => void;
+  licenseExpiry: Date | null; setLicenseExpiry: (d: Date | null) => void;
+}) {
+  return (
+    <View style={[s.card, shadow.card]}>
+      <FieldLabel required>Full name</FieldLabel>
+      <TextInput
+        style={s.boxInput}
+        value={props.driverName}
+        onChangeText={props.setDriverName}
+        placeholder="As on your driving licence"
+        placeholderTextColor={colors.mute}
+        autoCapitalize="words"
+      />
+
+      <FieldLabel style={{ marginTop: spacing(3) }}>Bio (optional)</FieldLabel>
+      <TextInput
+        style={[s.boxInput, { height: 72, textAlignVertical: "top" }]}
+        value={props.driverBio}
+        onChangeText={props.setDriverBio}
+        placeholder="Tell passengers a bit about yourself."
+        placeholderTextColor={colors.mute}
+        multiline
+      />
+
+      <FieldLabel required style={{ marginTop: spacing(3) }}>Driving licence number</FieldLabel>
+      <TextInput
+        style={s.boxInput}
+        value={props.licenseNumber}
+        onChangeText={props.setLicenseNumber}
+        placeholder="e.g. DL-1420110012345"
+        placeholderTextColor={colors.mute}
+        autoCapitalize="characters"
+        autoCorrect={false}
+      />
+
+      <View style={{ marginTop: spacing(3) }}>
+        <DateField
+          label="Licence expiry *"
+          value={props.licenseExpiry}
+          onChange={(d: Date | null) => props.setLicenseExpiry(d as any)}
+          minimumDate={new Date()}
+        />
+      </View>
+    </View>
+  );
+}
+
+function PrefsStep(props: {
+  prefMusic: "Quiet" | "Some" | "Loud"; setPrefMusic: (v: "Quiet" | "Some" | "Loud") => void;
+  prefChat: "Quiet" | "Some" | "Chatty"; setPrefChat: (v: "Quiet" | "Some" | "Chatty") => void;
+  prefSmoking: boolean; setPrefSmoking: (b: boolean) => void;
+  prefPets: boolean; setPrefPets: (b: boolean) => void;
+}) {
+  return (
+    <View style={[s.card, shadow.card]}>
+      <FieldLabel>Music</FieldLabel>
+      <SegmentPicker
+        options={MUSIC_OPTIONS as readonly string[]}
+        value={props.prefMusic}
+        onChange={(v) => props.setPrefMusic(v as "Quiet" | "Some" | "Loud")}
+      />
+
+      <FieldLabel style={{ marginTop: spacing(3) }}>Chat</FieldLabel>
+      <SegmentPicker
+        options={CHAT_OPTIONS as readonly string[]}
+        value={props.prefChat}
+        onChange={(v) => props.setPrefChat(v as "Quiet" | "Some" | "Chatty")}
+      />
+
+      <Toggle
+        label="Smoking OK"
+        value={props.prefSmoking}
+        onChange={props.setPrefSmoking}
+        icon="flame-outline"
+      />
+      <Toggle
+        label="Pets OK"
+        value={props.prefPets}
+        onChange={props.setPrefPets}
+        icon="paw-outline"
+      />
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Atoms
+// ---------------------------------------------------------------------------
+
+function FieldLabel({
+  children,
+  required,
+  style
+}: {
+  children: React.ReactNode;
+  required?: boolean;
+  style?: any;
+}) {
+  return (
+    <Text style={[s.label, style]}>
+      {children}
+      {required ? <Text style={{ color: colors.danger }}>  *</Text> : null}
+    </Text>
+  );
+}
+
+function StepDots({ stepIndex }: { stepIndex: number }) {
+  return (
+    <View style={s.dotsRow}>
+      {STEPS.map((step, i) => (
+        <React.Fragment key={step.id}>
+          <View
+            style={[
+              s.dot,
+              i < stepIndex && s.dotDone,
+              i === stepIndex && s.dotActive
+            ]}
+          >
+            {i < stepIndex ? (
+              <Ionicons name="checkmark" size={11} color={colors.primaryText} />
+            ) : (
+              <Text style={[s.dotText, i === stepIndex && { color: colors.primaryText }]}>{i + 1}</Text>
+            )}
+          </View>
+          {i < STEPS.length - 1 ? (
+            <View style={[s.dotLine, i < stepIndex && { backgroundColor: colors.text }]} />
+          ) : null}
+        </React.Fragment>
+      ))}
     </View>
   );
 }
@@ -657,7 +860,7 @@ function Bullet({ icon, text }: { icon: any; text: string }) {
   );
 }
 
-function Row({
+function Toggle({
   label,
   value,
   onChange,
@@ -669,7 +872,7 @@ function Row({
   icon: any;
 }) {
   return (
-    <View style={s.row}>
+    <View style={s.toggleRow}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Ionicons name={icon} size={18} color={colors.text} />
         <Text style={{ color: colors.text, fontSize: 15, fontWeight: "500" }}>{label}</Text>
@@ -686,8 +889,48 @@ function Row({
 
 const s = StyleSheet.create({
   shell: { flex: 1, backgroundColor: colors.bg },
-  h1: { fontSize: 26, fontWeight: "800", color: colors.text, letterSpacing: -0.4 },
-  sub: { fontSize: 14, color: colors.soft, marginTop: 4, marginBottom: spacing(4) },
+  headerWrap: {
+    paddingHorizontal: spacing(4),
+    paddingTop: spacing(2),
+    paddingBottom: spacing(3),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.card
+  },
+  h1: { fontSize: 24, fontWeight: "800", color: colors.text, letterSpacing: -0.4 },
+  sub: { fontSize: 13, color: colors.soft, marginTop: 4 },
+
+  dotsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing(3),
+    gap: 4
+  },
+  dot: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  dotActive: {
+    backgroundColor: colors.text,
+    borderColor: colors.text
+  },
+  dotDone: {
+    backgroundColor: colors.text,
+    borderColor: colors.text
+  },
+  dotText: { fontSize: 12, fontWeight: "700", color: colors.soft },
+  dotLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: colors.border
+  },
+
   card: {
     backgroundColor: colors.card,
     padding: spacing(4),
@@ -695,16 +938,6 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border
   },
-  sectionHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: spacing(3),
-    paddingBottom: spacing(2),
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border
-  },
-  sectionHeadText: { fontSize: 14, fontWeight: "800", color: colors.text, letterSpacing: -0.2 },
 
   label: {
     fontSize: 12,
@@ -792,18 +1025,6 @@ const s = StyleSheet.create({
   segmentText: { fontSize: 13, fontWeight: "700", color: colors.text },
   segmentTextActive: { color: colors.primaryText },
 
-  btn: {
-    marginTop: spacing(5),
-    backgroundColor: colors.primary,
-    borderRadius: radii.md,
-    paddingVertical: 16,
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 8
-  },
-  btnText: { color: colors.primaryText, fontWeight: "700", fontSize: 16, letterSpacing: -0.2 },
-  note: { color: colors.soft, fontSize: 12, marginTop: spacing(3), lineHeight: 18 },
   hint: {
     flexDirection: "row",
     gap: 6,
@@ -814,13 +1035,15 @@ const s = StyleSheet.create({
     borderRadius: radii.sm
   },
   hintText: { color: colors.text, fontSize: 12, flex: 1 },
-  row: {
+
+  toggleRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: spacing(3),
     paddingVertical: 4
   },
+
   bullet: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: spacing(3) },
   bulletIcon: {
     width: 36,
@@ -830,5 +1053,55 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
-  bulletText: { color: colors.text, fontSize: 14, flex: 1 }
+  bulletText: { color: colors.text, fontSize: 14, flex: 1 },
+
+  btnFull: {
+    marginTop: spacing(3),
+    backgroundColor: colors.primary,
+    borderRadius: radii.md,
+    paddingVertical: 16,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8
+  },
+  btnText: { color: colors.primaryText, fontWeight: "700", fontSize: 16, letterSpacing: -0.2 },
+  note: { color: colors.soft, fontSize: 12, marginTop: spacing(3), lineHeight: 18 },
+
+  footer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing(4),
+    paddingVertical: spacing(3),
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.card,
+    gap: 12
+  },
+  backBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    minWidth: 90,
+    justifyContent: "center"
+  },
+  backBtnText: { color: colors.text, fontWeight: "700", fontSize: 14 },
+  nextBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    paddingVertical: 14
+  },
+  nextBtnText: { color: colors.primaryText, fontWeight: "700", fontSize: 15 }
 });

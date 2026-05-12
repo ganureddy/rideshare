@@ -72,10 +72,10 @@ function Tabs() {
       })}
     >
       <Tab.Screen name="Search" component={SearchScreen} options={{ title: "Find" }} />
-      <Tab.Screen name="Publish" component={PublishScreen} options={{ title: "Publish" }} />
+      <Tab.Screen name="Publish" component={PublishScreen} options={{ title: "Offer" }} />
       <Tab.Screen name="Trips" component={TripsScreen} options={{ title: "Trips" }} />
       <Tab.Screen name="Chats" component={ChatListScreen} options={{ title: "Chats" }} />
-      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: "Account" }} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: "You" }} />
     </Tab.Navigator>
   );
 }

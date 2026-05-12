@@ -62,7 +62,7 @@ export function SearchScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <Text style={s.h1}>Where are you going?</Text>
+        <Text style={s.h1}>Where to?</Text>
         <Text style={s.sub}>Find a ride and travel for less.</Text>
 
         <View style={[s.card, shadow.card]}>
@@ -95,15 +95,16 @@ export function SearchScreen() {
             <View style={{ flexDirection: "row", alignItems: "center" }}>
               <View style={{ flex: 1 }}>
                 <DateField
-                  label="Date (optional)"
+                  label="When"
                   value={date}
                   onChange={setDate}
+                  placeholder="Any date"
                 />
               </View>
               {date ? (
                 <TouchableOpacity onPress={clearDate} style={s.clearBtn} hitSlop={6}>
                   <Ionicons name="close" size={14} color={colors.text} />
-                  <Text style={s.clearText}>Any date</Text>
+                  <Text style={s.clearText}>Any</Text>
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -134,17 +135,9 @@ export function SearchScreen() {
           </View>
 
           <TouchableOpacity style={s.btn} onPress={onSearch} activeOpacity={0.85}>
+            <Ionicons name="search" size={18} color={colors.primaryText} />
             <Text style={s.btnText}>Search rides</Text>
-            <Ionicons name="arrow-forward" size={18} color={colors.primaryText} />
           </TouchableOpacity>
-        </View>
-
-        <View style={s.tip}>
-          <Ionicons name="information-circle-outline" size={16} color={colors.soft} />
-          <Text style={s.tipText}>
-            Tip — A→Z rides also show up for A→M searches. We match endpoints
-            and intermediate stops.
-          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>

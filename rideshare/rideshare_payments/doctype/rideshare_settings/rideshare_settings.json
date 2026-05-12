@@ -30,7 +30,8 @@
   "from_email",
   "maps_section",
   "maps_provider",
-  "google_maps_api_key"
+  "google_maps_api_key",
+  "opencage_api_key"
  ],
  "fields": [
   {"fieldname": "marketplace_section", "fieldtype": "Section Break", "label": "Marketplace"},
@@ -58,8 +59,9 @@
   {"fieldname": "msg91_auth_key", "fieldtype": "Password", "label": "MSG91 Auth Key"},
   {"fieldname": "from_email", "fieldtype": "Data", "label": "From Email", "default": "noreply@rideshare.local"},
   {"fieldname": "maps_section", "fieldtype": "Section Break", "label": "Maps"},
-  {"fieldname": "maps_provider", "fieldtype": "Select", "label": "Maps Provider", "options": "OSM\nGoogle", "default": "OSM"},
-  {"fieldname": "google_maps_api_key", "fieldtype": "Password", "label": "Google Maps API Key"}
+  {"fieldname": "maps_provider", "fieldtype": "Select", "label": "Maps Provider", "options": "OSM\nGoogle\nOpenCage", "default": "OpenCage", "description": "OpenCage is the recommended provider for India — free tier covers low-volume use and the API key never ships in the mobile bundle."},
+  {"fieldname": "google_maps_api_key", "fieldtype": "Password", "label": "Google Maps API Key"},
+  {"fieldname": "opencage_api_key", "fieldtype": "Password", "label": "OpenCage API Key", "description": "Get one for free at opencagedata.com. Required when Maps Provider is OpenCage."}
  ],
  "issingle": 1,
  "links": [],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import frappe
@@ -46,13 +47,17 @@ def suggest_price(
 def list_cities(query: str | None = None, limit: int = 50) -> list[dict]:
 	"""Return active City records, optionally filtered by ``query``.
 
-	Search behaviour mirrors a Frappe Link field: the query is split on
-	whitespace and every word must match somewhere in city_name / state /
-	country (case-insensitive).  Results are ranked so exact matches and
-	prefix matches surface above substring matches.
+	Fuzzy search — three layers:
+	  1. Cheap SQL pre-filter: any-word substring or first-letter match on
+	     city_name / state / country, so we pull at most a few hundred rows.
+	  2. Python-side relevance score: exact / prefix / contains / fuzzy
+	     similarity (difflib SequenceMatcher) — recovers from typos like
+	     "bnaglore" → "Bangalore" or "delih" → "Delhi".
+	  3. Pad with the next alphabetical cities if nothing matched, so the
+	     picker is never empty even on an unusual query.
 
-	When no query is supplied we return the most-used / alphabetically-first
-	``limit`` cities so the picker is never empty.
+	When no query is supplied we return the alphabetically-first ``limit``
+	cities for instant suggestions.
 	"""
 
 	q = (query or "").strip()
@@ -70,38 +75,100 @@ def list_cities(query: str | None = None, limit: int = 50) -> list[dict]:
 			as_dict=True,
 		)
 
-	# Split into individual words; each one must match SOMEWHERE in the
-	# searchable text so "ban kar" finds "Bangalore (Karnataka)".
+	# 1. Cheap SQL pre-filter: any word matches anywhere, OR same starting
+	#    letter as the query (catches typos like "bnaglore" → starts with "b"
+	#    in our reference list of "bangalore").
 	words = [w for w in re.split(r"\s+", q) if w]
-	conditions: list[str] = []
-	values: dict[str, Any] = {"q": q, "qprefix": f"{q}%", "qlike": f"%{q}%", "limit": limit}
+	conds: list[str] = []
+	values: dict[str, Any] = {"first": f"{q[0]}%"}
 	for i, w in enumerate(words):
 		key = f"w{i}"
 		values[key] = f"%{w}%"
-		conditions.append(
+		conds.append(
 			f"(city_name LIKE %({key})s OR state LIKE %({key})s OR country LIKE %({key})s)"
 		)
+	# Combine with OR so a single typo'd word still pulls candidates (the
+	# Python ranker filters precisely below).
+	candidate_clause = " OR ".join(conds) if conds else "1=1"
+	# Always include first-letter-of-query matches as fuzzy fallback.
+	sql = f"""
+		SELECT name AS id, city_name AS label, state, country, lat, lng, slug
+		FROM `tabCity`
+		WHERE is_active = 1
+		  AND ((LOWER(city_name) LIKE LOWER(%(first)s)) OR ({candidate_clause}))
+		ORDER BY city_name ASC
+		LIMIT 500
+	"""
+	candidates = frappe.db.sql(sql, values, as_dict=True)
 
-	# Relevance score:
-	#   3 = exact city match, 2 = city startswith, 1 = city contains, 0 = matched via state/country only
-	rows = frappe.db.sql(
-		f"""SELECT name AS id, city_name AS label, state, country, lat, lng, slug,
-		           CASE
-		               WHEN LOWER(city_name) = LOWER(%(q)s) THEN 3
-		               WHEN city_name LIKE %(qprefix)s THEN 2
-		               WHEN city_name LIKE %(qlike)s THEN 1
-		               ELSE 0
-		           END AS _score
-		    FROM `tabCity`
-		    WHERE is_active = 1 AND {" AND ".join(conditions)}
-		    ORDER BY _score DESC, city_name ASC
-		    LIMIT %(limit)s""",
-		values,
-		as_dict=True,
-	)
-	for r in rows:
-		r.pop("_score", None)
-	return rows
+	# 2. Score every candidate.
+	q_lower = q.lower()
+	scored: list[tuple[float, dict]] = []
+	for c in candidates:
+		score = _city_score(q_lower, c)
+		if score > 0:
+			scored.append((score, c))
+	scored.sort(key=lambda t: (-t[0], t[1].get("label") or ""))
+	results = [c for _s, c in scored[:limit]]
+
+	# 3. Pad if too few matched — surface alphabetically-near cities so the
+	#    user always sees something.
+	if len(results) < min(8, limit):
+		seen_ids = {r["id"] for r in results}
+		extra = frappe.db.sql(
+			"""SELECT name AS id, city_name AS label, state, country, lat, lng, slug
+			   FROM `tabCity`
+			   WHERE is_active = 1 AND city_name LIKE %(p)s
+			   ORDER BY city_name ASC LIMIT 10""",
+			{"p": f"{q[0]}%"},
+			as_dict=True,
+		)
+		for c in extra:
+			if c["id"] in seen_ids:
+				continue
+			results.append(c)
+			if len(results) >= limit:
+				break
+	return results
+
+
+def _city_score(q_lower: str, city: dict) -> float:
+	"""Relevance for one candidate.  Higher = better.
+
+	100 — exact city name match
+	 90 — city name starts with the query
+	 70 — city name contains every word of the query
+	 50 — fuzzy similarity ratio >= 0.78 (handles typos)
+	 35 — state / country contains the query
+	 25 — fuzzy similarity ratio >= 0.6
+	"""
+
+	name = (city.get("label") or "").lower()
+	state = (city.get("state") or "").lower()
+	country = (city.get("country") or "").lower()
+
+	if name == q_lower:
+		return 100.0
+	if name.startswith(q_lower):
+		return 90.0
+
+	# Every word matches as substring → strong contains.
+	words = [w for w in re.split(r"\s+", q_lower) if w]
+	if words and all(w in name for w in words):
+		return 70.0
+
+	# Fuzzy match on the city name (tolerates a typo or two).
+	ratio = SequenceMatcher(None, q_lower, name).ratio()
+	if ratio >= 0.78:
+		return 50.0 + (ratio - 0.78) * 50  # 50 → ~61 as ratio approaches 1
+
+	if q_lower in state or q_lower in country:
+		return 35.0
+
+	# Loose fuzzy fallback.
+	if ratio >= 0.6:
+		return 25.0 + (ratio - 0.6) * 25
+	return 0.0
 
 
 @frappe.whitelist(allow_guest=True)
