@@ -40,10 +40,22 @@ export type RideLocation = {
   at: string;
 };
 
+export type PassengerLocation = {
+  ride: string;
+  booking: string;
+  passenger: string;
+  lat: number;
+  lng: number;
+  heading?: number | null;
+  speed_kmh?: number | null;
+  at: string;
+};
+
 export async function subscribeToRide(
   rideId: string,
   onLocation: (loc: RideLocation) => void,
-  onStatus?: (s: { ride: string; status: string }) => void
+  onStatus?: (s: { ride: string; status: string }) => void,
+  onPassengerLocation?: (loc: PassengerLocation) => void
 ): Promise<() => void> {
   const sock = await getSocket();
   sock.emit("subscribe", { doctype: "Ride", docname: rideId });
@@ -54,11 +66,16 @@ export async function subscribeToRide(
   const statusHandler = (msg: { ride: string; status: string }) => {
     if (onStatus && msg && msg.ride === rideId) onStatus(msg);
   };
+  const paxHandler = (msg: PassengerLocation) => {
+    if (onPassengerLocation && msg && msg.ride === rideId) onPassengerLocation(msg);
+  };
   sock.on("rideshare:location", locHandler);
   sock.on("rideshare:status", statusHandler);
+  sock.on("rideshare:passenger_location", paxHandler);
   return () => {
     sock.off("rideshare:location", locHandler);
     sock.off("rideshare:status", statusHandler);
+    sock.off("rideshare:passenger_location", paxHandler);
     sock.emit("unsubscribe", { doctype: "Ride", docname: rideId });
   };
 }

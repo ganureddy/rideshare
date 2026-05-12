@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import MapView, { Marker, Polyline, UrlTile, PROVIDER_DEFAULT } from "react-native-maps";
 import { Ionicons } from "@expo/vector-icons";
 import { call } from "@/api/client";
 import { subscribeToRide } from "@/realtime/socket";
@@ -297,7 +297,12 @@ export function RideDetailScreen() {
   } else if (alreadyBooked) {
     cta = {
       label: summary.my_booking!.status === "Confirmed" ? "Track ride" : "View booking",
-      action: () => nav.navigate("Tracking", { rideId: params.rideId, role: "passenger" })
+      action: () =>
+        nav.navigate("Tracking", {
+          rideId: params.rideId,
+          role: "passenger",
+          bookingId: summary.my_booking!.name
+        })
     };
   } else if (summary.seats_available > 0 && summary.status === "Published") {
     cta = { label: "Book a seat", action: book };
@@ -315,6 +320,13 @@ export function RideDetailScreen() {
             initialRegion={region}
             pointerEvents="none"
           >
+            {/* Free OpenStreetMap tiles — no Google Maps API key required. */}
+            <UrlTile
+              urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maximumZ={19}
+              flipY={false}
+              shouldReplaceMapContent={true}
+            />
             <Marker
               coordinate={{ latitude: summary.origin_lat, longitude: summary.origin_lng }}
               title={summary.origin_city}

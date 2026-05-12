@@ -96,6 +96,12 @@ def _ensure_settings() -> None:
 	doc.from_email = doc.from_email or "noreply@rideshare.local"
 	if doc.auto_verify_drivers is None:
 		doc.auto_verify_drivers = 1
+	# Live tracking defaults — OSRM public demo is free for dev; swap to a
+	# self-hosted instance in production.  No API key required either way.
+	doc.osrm_base_url = doc.osrm_base_url or "https://router.project-osrm.org"
+	doc.tracking_push_interval_seconds = doc.tracking_push_interval_seconds or 10
+	doc.tracking_stale_after_seconds = doc.tracking_stale_after_seconds or 45
+	doc.route_refresh_seconds = doc.route_refresh_seconds or 60
 	doc.flags.ignore_permissions = True
 	doc.save(ignore_permissions=True)
 

@@ -31,7 +31,13 @@
   "maps_section",
   "maps_provider",
   "google_maps_api_key",
-  "opencage_api_key"
+  "opencage_api_key",
+  "tracking_section",
+  "osrm_base_url",
+  "tracking_push_interval_seconds",
+  "tracking_column_break",
+  "tracking_stale_after_seconds",
+  "route_refresh_seconds"
  ],
  "fields": [
   {"fieldname": "marketplace_section", "fieldtype": "Section Break", "label": "Marketplace"},
@@ -61,7 +67,13 @@
   {"fieldname": "maps_section", "fieldtype": "Section Break", "label": "Maps"},
   {"fieldname": "maps_provider", "fieldtype": "Select", "label": "Maps Provider", "options": "OSM\nGoogle\nOpenCage", "default": "OpenCage", "description": "OpenCage is the recommended provider for India — free tier covers low-volume use and the API key never ships in the mobile bundle."},
   {"fieldname": "google_maps_api_key", "fieldtype": "Password", "label": "Google Maps API Key"},
-  {"fieldname": "opencage_api_key", "fieldtype": "Password", "label": "OpenCage API Key", "description": "Get one for free at opencagedata.com. Required when Maps Provider is OpenCage."}
+  {"fieldname": "opencage_api_key", "fieldtype": "Password", "label": "OpenCage API Key", "description": "Get one for free at opencagedata.com. Required when Maps Provider is OpenCage."},
+  {"fieldname": "tracking_section", "fieldtype": "Section Break", "label": "Live Tracking (OSRM)"},
+  {"fieldname": "osrm_base_url", "fieldtype": "Data", "label": "OSRM Base URL", "default": "https://router.project-osrm.org", "description": "Open-source routing engine. Public demo by default; self-host for production (docker run osrm/osrm-backend). No API key required."},
+  {"fieldname": "tracking_push_interval_seconds", "fieldtype": "Int", "label": "Tracking Push Interval (s)", "default": "10", "description": "How often the mobile app POSTs a GPS fix during an active trip. Smaller = fresher, but more battery & data usage."},
+  {"fieldname": "tracking_column_break", "fieldtype": "Column Break"},
+  {"fieldname": "tracking_stale_after_seconds", "fieldtype": "Int", "label": "Stale After (s)", "default": "45", "description": "A location older than this is considered \"signal lost\" in the UI."},
+  {"fieldname": "route_refresh_seconds", "fieldtype": "Int", "label": "Route Refresh Interval (s)", "default": "60", "description": "How often the server re-runs OSRM to update the polyline + ETA. Server caches results within this window."}
  ],
  "issingle": 1,
  "links": [],

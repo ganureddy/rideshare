@@ -22,7 +22,14 @@
   "details_section",
   "passenger_message",
   "pickup_waypoint",
-  "dropoff_waypoint"
+  "dropoff_waypoint",
+  "tracking_section",
+  "passenger_lat",
+  "passenger_lng",
+  "passenger_heading",
+  "tracking_column_break",
+  "passenger_speed_kmh",
+  "passenger_last_seen_at"
  ],
  "fields": [
   {"fieldname": "ride", "fieldtype": "Link", "label": "Ride", "options": "Ride", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
@@ -42,7 +49,14 @@
   {"fieldname": "details_section", "fieldtype": "Section Break", "label": "Details"},
   {"fieldname": "passenger_message", "fieldtype": "Small Text", "label": "Message to Driver"},
   {"fieldname": "pickup_waypoint", "fieldtype": "Link", "label": "Pickup Waypoint", "options": "Ride Waypoint"},
-  {"fieldname": "dropoff_waypoint", "fieldtype": "Link", "label": "Dropoff Waypoint", "options": "Ride Waypoint"}
+  {"fieldname": "dropoff_waypoint", "fieldtype": "Link", "label": "Dropoff Waypoint", "options": "Ride Waypoint"},
+  {"fieldname": "tracking_section", "fieldtype": "Section Break", "label": "Live Location", "collapsible": 1, "description": "Last GPS fix pushed by the passenger's mobile app during an active trip. Ephemeral — only meaningful while status is Confirmed/InProgress."},
+  {"fieldname": "passenger_lat", "fieldtype": "Float", "label": "Passenger Latitude", "read_only": 1, "precision": "7"},
+  {"fieldname": "passenger_lng", "fieldtype": "Float", "label": "Passenger Longitude", "read_only": 1, "precision": "7"},
+  {"fieldname": "passenger_heading", "fieldtype": "Float", "label": "Passenger Heading (deg)", "read_only": 1},
+  {"fieldname": "tracking_column_break", "fieldtype": "Column Break"},
+  {"fieldname": "passenger_speed_kmh", "fieldtype": "Float", "label": "Passenger Speed (km/h)", "read_only": 1},
+  {"fieldname": "passenger_last_seen_at", "fieldtype": "Datetime", "label": "Passenger Last Seen At", "read_only": 1}
  ],
  "links": [
   {"link_doctype": "Payment Transaction", "link_fieldname": "booking", "group": "Payments"},

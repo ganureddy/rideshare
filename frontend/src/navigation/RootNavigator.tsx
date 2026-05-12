@@ -27,7 +27,7 @@ export type RootStackParamList = {
     seats?: number;
   };
   RideDetail: { rideId: string };
-  Tracking: { rideId: string; role?: "driver" | "passenger" };
+  Tracking: { rideId: string; role?: "driver" | "passenger"; bookingId?: string };
   ChatThread: { threadId: string };
 };
 

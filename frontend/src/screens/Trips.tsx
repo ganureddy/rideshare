@@ -174,7 +174,8 @@ function UpcomingTab({
           onPress={() =>
             nav.navigate("Tracking", {
               rideId: data.active_trip_as_passenger!.ride,
-              role: "passenger"
+              role: "passenger",
+              bookingId: data.active_trip_as_passenger!.booking
             })
           }
         >
