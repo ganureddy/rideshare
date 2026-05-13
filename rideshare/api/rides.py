@@ -241,6 +241,21 @@ def publish_ride(payload: str | dict) -> dict:
 
 	_upsert_driver_profile_inline(user, driver_block, preferences_block)
 
+	# Driver portrait — written straight to User.user_image so every place
+	# that already renders the driver's avatar (chat, ride detail, search
+	# cards) picks it up automatically.
+	driver_photo = (driver_block.get("photo") or "").strip()
+	if driver_photo:
+		try:
+			user_doc = frappe.get_doc("User", user)
+			user_doc.user_image = driver_photo
+			user_doc.flags.ignore_permissions = True
+			user_doc.save(ignore_permissions=True)
+		except Exception:
+			frappe.log_error(
+				title="Could not save driver portrait", message=frappe.get_traceback()
+			)
+
 	# Vehicle: prefer the explicit existing one, then upsert the wizard
 	# block, then fall back to the user's first existing vehicle.
 	vehicle = data.get("vehicle")
@@ -423,6 +438,28 @@ def _upsert_vehicle_inline(user: str, vehicle: dict, existing: str | None) -> st
 		doc.seats_available = max(1, min(12, seats))
 	if vehicle.get("license_plate"):
 		doc.license_plate = vehicle["license_plate"]
+
+	# Photo gallery — keep the existing rows when the wizard didn't send a
+	# fresh list (e.g. user re-published with the same car) and replace
+	# them entirely otherwise.  Each entry is a file URL produced by the
+	# /api/method/upload_file call from the mobile app.
+	photos = vehicle.get("photos")
+	if isinstance(photos, list):
+		# Wipe existing rows and rebuild — keeps captions in sync.
+		doc.set("photos", [])
+		for idx, p in enumerate(photos):
+			if isinstance(p, str) and p.strip():
+				url = p.strip()
+				caption = None
+			elif isinstance(p, dict) and (p.get("photo") or "").strip():
+				url = p["photo"].strip()
+				caption = (p.get("caption") or None)
+			else:
+				continue
+			doc.append(
+				"photos",
+				{"photo": url, "caption": caption or f"Photo {idx + 1}"},
+			)
 
 	doc.flags.ignore_permissions = True
 	if doc.is_new():

@@ -9,7 +9,9 @@ import {
   Alert,
   Linking,
   Animated,
-  Easing
+  Easing,
+  Image,
+  Modal
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
@@ -17,7 +19,9 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import MapView, { Marker, Polyline, UrlTile, PROVIDER_DEFAULT } from "react-native-maps";
 import { Ionicons } from "@expo/vector-icons";
 import { call } from "@/api/client";
-import { subscribeToRide } from "@/realtime/socket";
+import { subscribeToRide, subscribeToBookings } from "@/realtime/socket";
+import { locateAndResolve, ResolvedLocation } from "@/utils/location";
+import { absoluteFileUrl } from "@/utils/upload";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -48,6 +52,7 @@ type Summary = {
   waypoints: { city: string; lat: number; lng: number; stop_order: number }[];
   driver_display: {
     name?: string;
+    image?: string | null;
     rating_avg?: number;
     rating_count?: number;
     is_verified?: boolean;
@@ -71,6 +76,7 @@ type Summary = {
     seats?: number;
     has_plate?: boolean;
     is_verified?: boolean;
+    photos?: string[];
   };
   contacts?: {
     driver?: { name?: string; mobile_no?: string | null; can_call?: boolean };
@@ -130,12 +136,17 @@ type LiveLoc = {
   at?: string;
 } | null;
 
+type BookerLoc = ResolvedLocation | null;
+
 export function RideDetailScreen() {
   const { params } = useRoute<Route>();
   const nav = useNavigation<Nav>();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [liveLoc, setLiveLoc] = useState<LiveLoc>(null);
+  const [bookerLoc, setBookerLoc] = useState<BookerLoc>(null);
+  const [pendingCount, setPendingCount] = useState<number>(0);
 
   async function load() {
     try {
@@ -151,6 +162,77 @@ export function RideDetailScreen() {
   useEffect(() => {
     load();
   }, [params.rideId]);
+
+  // Booker / driver location auto-fetch.  Both flows benefit:
+  //   * Booker (anyone but the driver) gets a pickup pin so they can sanity
+  //     check distance to origin before confirming the seat.
+  //   * Driver sees their own current position next to the publish point
+  //     (helpful when they're already on the road and need to verify the
+  //     ride pickup is still where they think it is).
+  // The reverse-geocode hits the backend's OpenCage proxy, so the API key
+  // never ships in the bundle.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const loc = await locateAndResolve();
+      if (cancelled || !loc) return;
+      setBookerLoc(loc);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [params.rideId]);
+
+  // For the driver, fetch the live pending-request count so the
+  // "Manage bookings" button can surface an alert badge.
+  useEffect(() => {
+    if (!summary?.am_i_driver) return;
+    let cancelled = false;
+    async function refresh() {
+      try {
+        const r = await call<{ counts?: { pending: number } }>(
+          "rideshare.api.bookings.list_ride_bookings",
+          { ride: params.rideId }
+        );
+        if (!cancelled) setPendingCount(r?.counts?.pending ?? 0);
+      } catch {
+        /* ignore */
+      }
+    }
+    refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [summary?.am_i_driver, params.rideId]);
+
+  // React to booking lifecycle changes pushed by the backend so the screen
+  // updates without the user having to pull-to-refresh.
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    (async () => {
+      try {
+        unsub = await subscribeToBookings((evt) => {
+          if (evt.ride !== params.rideId) return;
+          load();
+          if (summary?.am_i_driver) {
+            // Pending count almost certainly changed.
+            call<{ counts?: { pending: number } }>(
+              "rideshare.api.bookings.list_ride_bookings",
+              { ride: params.rideId }
+            )
+              .then((r) => setPendingCount(r?.counts?.pending ?? 0))
+              .catch(() => {});
+          }
+        }, params.rideId);
+      } catch {
+        /* socket optional */
+      }
+    })();
+    return () => {
+      if (unsub) unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.rideId, summary?.am_i_driver]);
 
   // Live driver location: shown to a confirmed booker (or the driver
   // themselves) when the ride is moving.  Polls every 30s as a backup
@@ -256,6 +338,49 @@ export function RideDetailScreen() {
     }
   }
 
+  function cancelBooking() {
+    if (!summary?.my_booking) return;
+    const isPending = summary.my_booking.status === "Pending";
+    Alert.alert(
+      isPending ? "Cancel this booking?" : "Cancel your booking?",
+      isPending
+        ? "The driver hasn't confirmed yet — you'll get a 100% refund."
+        : "A refund will be calculated based on the ride's cancellation policy.",
+      [
+        { text: "Keep booking", style: "cancel" },
+        {
+          text: "Cancel booking",
+          style: "destructive",
+          onPress: async () => {
+            setCancelling(true);
+            try {
+              const res = await call<{
+                refund_amount?: number;
+                refund_percentage?: number;
+              }>("rideshare.api.bookings.cancel_booking", {
+                booking: summary.my_booking!.name
+              });
+              const pct = res?.refund_percentage ?? 0;
+              Alert.alert(
+                "Booking cancelled",
+                pct >= 100
+                  ? "You'll be refunded in full."
+                  : pct > 0
+                    ? `You'll be refunded ${pct}% (₹${Math.round(res?.refund_amount ?? 0)}).`
+                    : "No refund per the ride's cancellation policy."
+              );
+              await load();
+            } catch (e: any) {
+              Alert.alert("Couldn't cancel", e?.message ?? "Try again.");
+            } finally {
+              setCancelling(false);
+            }
+          }
+        }
+      ]
+    );
+  }
+
   function callNumber(number?: string | null) {
     if (!number) return;
     Linking.openURL(`tel:${number}`).catch(() =>
@@ -286,26 +411,48 @@ export function RideDetailScreen() {
     .toUpperCase();
 
   const alreadyBooked = !!summary.my_booking && summary.my_booking.status !== "Cancelled";
+  const myBookingStatus = summary.my_booking?.status;
+  const isPending = myBookingStatus === "Pending";
   const isDriver = !!summary.am_i_driver;
+  const showBookerPin =
+    !!bookerLoc && !isDriver && summary.status !== "Completed" && summary.status !== "Cancelled";
 
-  let cta: { label: string; action: () => void; disabled?: boolean } | null = null;
+  let cta: {
+    label: string;
+    action: () => void;
+    disabled?: boolean;
+    icon?: any;
+    badge?: number;
+  } | null = null;
   if (isDriver) {
     cta = {
-      label: "Open driver dashboard",
-      action: () => nav.navigate("Tracking", { rideId: params.rideId, role: "driver" })
+      label: pendingCount > 0 ? "Review requests" : "Manage bookings",
+      icon: pendingCount > 0 ? "alert-circle" : "people",
+      badge: pendingCount,
+      action: () => nav.navigate("RideBookings", { rideId: params.rideId })
     };
   } else if (alreadyBooked) {
-    cta = {
-      label: summary.my_booking!.status === "Confirmed" ? "Track ride" : "View booking",
-      action: () =>
-        nav.navigate("Tracking", {
-          rideId: params.rideId,
-          role: "passenger",
-          bookingId: summary.my_booking!.name
-        })
-    };
+    if (isPending) {
+      cta = {
+        label: "Awaiting driver confirmation",
+        icon: "hourglass",
+        action: () => {},
+        disabled: true
+      };
+    } else {
+      cta = {
+        label: myBookingStatus === "Confirmed" ? "Track ride" : "View booking",
+        icon: "navigate",
+        action: () =>
+          nav.navigate("Tracking", {
+            rideId: params.rideId,
+            role: "passenger",
+            bookingId: summary.my_booking!.name
+          })
+      };
+    }
   } else if (summary.seats_available > 0 && summary.status === "Published") {
-    cta = { label: "Book a seat", action: book };
+    cta = { label: "Book a seat", icon: "arrow-forward", action: book };
   } else {
     cta = { label: "No seats available", action: () => {}, disabled: true };
   }
@@ -359,6 +506,16 @@ export function RideDetailScreen() {
                 <CarPin />
               </Marker>
             ) : null}
+            {showBookerPin ? (
+              <Marker
+                coordinate={{ latitude: bookerLoc!.lat, longitude: bookerLoc!.lng }}
+                title={isDriver ? "You" : "Your location"}
+                description={bookerLoc!.address ?? undefined}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <BookerPin />
+              </Marker>
+            ) : null}
           </MapView>
 
           {liveLoc ? (
@@ -369,7 +526,53 @@ export function RideDetailScreen() {
               </Text>
             </View>
           ) : null}
+
+          {showBookerPin ? (
+            <TouchableOpacity
+              style={s.youPill}
+              onPress={() =>
+                nav.navigate("MyLocation", { role: isDriver ? "driver" : "person" })
+              }
+              activeOpacity={0.85}
+            >
+              <Ionicons name="locate" size={11} color={colors.primaryText} />
+              <Text style={s.youPillText} numberOfLines={1}>
+                You · {bookerLoc!.area || bookerLoc!.city || bookerLoc!.address || "current location"}
+              </Text>
+              <Ionicons name="chevron-forward" size={12} color={colors.primaryText} />
+            </TouchableOpacity>
+          ) : null}
         </View>
+
+        {!isDriver && isPending ? (
+          <View style={[s.statusCard, shadow.card]}>
+            <View style={s.statusIcon}>
+              <Ionicons name="hourglass" size={20} color={colors.text} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.statusTitle}>Awaiting driver confirmation</Text>
+              <Text style={s.statusSub}>
+                Your seat is held while the driver reviews this request. You can cancel any time
+                before they accept for a full refund.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={s.statusCancel}
+              onPress={cancelBooking}
+              disabled={cancelling}
+              activeOpacity={0.85}
+            >
+              {cancelling ? (
+                <ActivityIndicator color={colors.danger} size="small" />
+              ) : (
+                <>
+                  <Ionicons name="close" size={14} color={colors.danger} />
+                  <Text style={s.statusCancelText}>Cancel</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={[s.card, shadow.card]}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -419,7 +622,14 @@ export function RideDetailScreen() {
         <View style={[s.card, shadow.card, { marginTop: spacing(3) }]}>
           <Text style={s.section}>{summary.am_i_driver ? "Publisher (you)" : "Publisher"}</Text>
           <View style={s.driverRow}>
-            <View style={s.avatar}><Text style={s.avatarText}>{initials}</Text></View>
+            {(() => {
+              const portrait = absoluteFileUrl(summary.driver_display.image);
+              return portrait ? (
+                <Image source={{ uri: portrait }} style={s.avatarImg} />
+              ) : (
+                <View style={s.avatar}><Text style={s.avatarText}>{initials}</Text></View>
+              );
+            })()}
             <View style={{ flex: 1 }}>
               <Text style={s.driverName}>
                 {summary.driver_display.name || "Driver"}
@@ -491,6 +701,7 @@ export function RideDetailScreen() {
                 </Text>
               </View>
             </View>
+            <CarPhotoGallery photos={summary.vehicle_details.photos || []} />
           </View>
         ) : null}
 
@@ -554,6 +765,27 @@ export function RideDetailScreen() {
             <Ionicons name="chevron-forward" size={18} color={colors.soft} />
           </TouchableOpacity>
         ) : null}
+
+        {/* Confirmed bookings retain a quiet cancel link — money returned
+            per the ride's policy.  Pending bookings already show the loud
+            cancel button up top. */}
+        {!isDriver && alreadyBooked && !isPending && summary.status !== "Completed" ? (
+          <TouchableOpacity
+            style={s.cancelLink}
+            onPress={cancelBooking}
+            disabled={cancelling}
+            activeOpacity={0.7}
+          >
+            {cancelling ? (
+              <ActivityIndicator color={colors.danger} size="small" />
+            ) : (
+              <>
+                <Ionicons name="close-circle-outline" size={14} color={colors.danger} />
+                <Text style={s.cancelLinkText}>Cancel my booking</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        ) : null}
       </ScrollView>
 
       <View style={s.cta}>
@@ -572,7 +804,16 @@ export function RideDetailScreen() {
           ) : (
             <>
               <Text style={s.cta_btnText}>{cta.label}</Text>
-              <Ionicons name="arrow-forward" size={18} color={colors.primaryText} />
+              {cta.badge && cta.badge > 0 ? (
+                <View style={s.ctaBadge}>
+                  <Text style={s.ctaBadgeText}>{cta.badge}</Text>
+                </View>
+              ) : null}
+              <Ionicons
+                name={cta.icon ?? "arrow-forward"}
+                size={18}
+                color={colors.primaryText}
+              />
             </>
           )}
         </TouchableOpacity>
@@ -623,6 +864,68 @@ function ContactRow({
           <Text style={s.callPillText}>Call</Text>
         </TouchableOpacity>
       ) : null}
+    </View>
+  );
+}
+
+function CarPhotoGallery({ photos }: { photos: string[] }) {
+  const urls = photos
+    .map((p) => absoluteFileUrl(p))
+    .filter((u): u is string => !!u);
+  const [zoomed, setZoomed] = useState<string | null>(null);
+  if (urls.length === 0) return null;
+  return (
+    <>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={s.galleryRow}
+      >
+        {urls.map((url, idx) => (
+          <TouchableOpacity
+            key={`${url}-${idx}`}
+            style={s.galleryThumb}
+            activeOpacity={0.85}
+            onPress={() => setZoomed(url)}
+          >
+            <Image source={{ uri: url }} style={s.galleryThumbImg} />
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <Modal
+        visible={!!zoomed}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setZoomed(null)}
+      >
+        <View style={s.zoomShell}>
+          <TouchableOpacity
+            style={s.zoomClose}
+            onPress={() => setZoomed(null)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="close" size={22} color={colors.primaryText} />
+          </TouchableOpacity>
+          {zoomed ? (
+            <Image
+              source={{ uri: zoomed }}
+              style={s.zoomImg}
+              resizeMode="contain"
+            />
+          ) : null}
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function BookerPin() {
+  return (
+    <View style={s.bookerWrap}>
+      <View style={s.bookerOuter} />
+      <View style={s.bookerInner}>
+        <Ionicons name="person" size={12} color={colors.primaryText} />
+      </View>
     </View>
   );
 }
@@ -706,6 +1009,86 @@ const s = StyleSheet.create({
   },
   liveText: { color: "#fff", fontSize: 11, fontWeight: "700" },
 
+  youPill: {
+    position: "absolute",
+    bottom: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    maxWidth: "80%"
+  },
+  youPillText: { color: colors.primaryText, fontSize: 11, fontWeight: "700" },
+
+  bookerWrap: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
+  bookerOuter: {
+    position: "absolute",
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.18)"
+  },
+  bookerInner: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff"
+  },
+
+  statusCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: spacing(4),
+    marginTop: spacing(3),
+    backgroundColor: "#FFF8E1",
+    borderRadius: radii.lg,
+    padding: spacing(3),
+    borderWidth: 1,
+    borderColor: "#FFE082"
+  },
+  statusIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.06)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  statusTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
+  statusSub: { fontSize: 12, color: colors.text, marginTop: 2, lineHeight: 17 },
+  statusCancel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1.2,
+    borderColor: colors.danger,
+    backgroundColor: colors.card
+  },
+  statusCancelText: { fontSize: 12, fontWeight: "700", color: colors.danger },
+
+  cancelLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginHorizontal: spacing(4),
+    marginTop: spacing(3),
+    paddingVertical: 10
+  },
+  cancelLinkText: { color: colors.danger, fontSize: 13, fontWeight: "700" },
+
   markerWrap: { width: 56, height: 56, alignItems: "center", justifyContent: "center" },
   pulse: {
     position: "absolute",
@@ -761,6 +1144,12 @@ const s = StyleSheet.create({
   section: { fontSize: 11, color: colors.soft, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: "700", marginBottom: 8 },
   driverRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.text, alignItems: "center", justifyContent: "center" },
+  avatarImg: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.bgAlt
+  },
   avatarText: { color: colors.primaryText, fontSize: 16, fontWeight: "700" },
   driverName: { fontSize: 16, fontWeight: "700", color: colors.text },
   driverMeta: { fontSize: 12, color: colors.soft, marginTop: 2 },
@@ -861,5 +1250,46 @@ const s = StyleSheet.create({
     alignItems: "center",
     gap: 6
   },
-  cta_btnText: { color: colors.primaryText, fontWeight: "700", fontSize: 15, letterSpacing: -0.2 }
+  cta_btnText: { color: colors.primaryText, fontWeight: "700", fontSize: 15, letterSpacing: -0.2 },
+  ctaBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: colors.danger,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  ctaBadgeText: { color: colors.primaryText, fontSize: 11, fontWeight: "800" },
+
+  galleryRow: { gap: 8, paddingTop: spacing(3), paddingRight: 4 },
+  galleryThumb: {
+    width: 116,
+    height: 78,
+    borderRadius: radii.md,
+    overflow: "hidden",
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.border
+  },
+  galleryThumbImg: { width: 116, height: 78, resizeMode: "cover" },
+  zoomShell: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.94)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  zoomClose: {
+    position: "absolute",
+    top: 50,
+    right: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2
+  },
+  zoomImg: { width: "100%", height: "100%" }
 });

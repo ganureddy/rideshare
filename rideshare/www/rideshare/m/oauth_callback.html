@@ -1,0 +1,85 @@
+{%- extends "templates/web.html" -%}
+{%- block page_content -%}
+<style>
+  body, body.web-page-content { background:#1976D2 !important; margin:0; padding:0; }
+  .navbar, .web-footer, .website-footer, .page-footer { display:none !important; }
+  .page_content { padding:0 !important; }
+  .rs-oauth-shell{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#1976D2;color:#fff;
+    font-family:-apple-system,BlinkMacSystemFont,Roboto,Segoe UI,sans-serif;
+    padding:32px;
+  }
+  .rs-oauth-card{
+    max-width:420px;width:100%;background:rgba(255,255,255,.08);
+    border-radius:18px;padding:36px 28px;text-align:center;
+    border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(8px);
+  }
+  .rs-oauth-emoji{font-size:42px;line-height:1;margin-bottom:14px}
+  .rs-oauth-title{font-size:22px;font-weight:800;letter-spacing:-.4px;margin:0 0 6px}
+  .rs-oauth-sub{font-size:14px;opacity:.85;margin:0 0 22px;line-height:1.45}
+  .rs-oauth-btn{
+    display:inline-block;background:#fff;color:#1976D2;text-decoration:none;
+    padding:13px 22px;border-radius:999px;font-weight:800;font-size:14px;
+    border:0;cursor:pointer;
+  }
+  .rs-oauth-spin{
+    width:34px;height:34px;border-radius:50%;
+    border:3px solid rgba(255,255,255,.25);border-top-color:#fff;
+    margin:0 auto 18px;animation:spin .9s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .rs-oauth-err{
+    background:rgba(255,200,200,.18);border:1px solid rgba(255,180,180,.4);
+    border-radius:10px;padding:10px 12px;margin:0 0 18px;font-size:13px;
+  }
+</style>
+
+<div class="rs-oauth-shell">
+  <div class="rs-oauth-card">
+    {%- if error -%}
+      <div class="rs-oauth-emoji">⚠️</div>
+      <div class="rs-oauth-title">Sign-in didn't complete</div>
+      <div class="rs-oauth-err">{{ error }}</div>
+      <button id="rs-oauth-go" type="button" class="rs-oauth-btn">Return to the app</button>
+      <p style="margin-top:18px;opacity:.75;font-size:12px;">
+        Or <a href="/login" style="color:#fff;text-decoration:underline;">try again on the web</a>.
+      </p>
+    {%- else -%}
+      <div class="rs-oauth-spin"></div>
+      <div class="rs-oauth-title">Welcome{% if user_full_name %}, {{ user_full_name }}{% endif %} 👋</div>
+      <div class="rs-oauth-sub">
+        Hold on — we're handing you back to the Rideshare app.
+      </div>
+      <button id="rs-oauth-go" type="button" class="rs-oauth-btn">Open the Rideshare app</button>
+      <p style="margin-top:18px;opacity:.75;font-size:12px;">
+        If nothing happens, tap the button above.
+      </p>
+    {%- endif -%}
+  </div>
+</div>
+
+<script>
+  // The deep link that hands the API token pair back to the mobile app
+  // is intentionally NOT rendered into the DOM as an <a href>.  Putting
+  // it in HTML would let it be long-pressed / "Copy link" / saved to the
+  // browser history.  Instead we keep it in a JS closure, fire it via
+  // window.location.assign once after paint, and replaceState() to
+  // immediately purge it from the back-stack.
+  (function(){
+    var url = {{ deeplink|tojson }};
+    var btn = document.getElementById("rs-oauth-go");
+    if (!url) return;
+    function go(){
+      try { window.location.assign(url); } catch (e) {}
+      // Drop the deep link from the visible URL bar so a back-tap
+      // doesn't bring it back.
+      try {
+        history.replaceState(null, "", window.location.pathname);
+      } catch (e) {}
+    }
+    if (btn) btn.addEventListener("click", go);
+    setTimeout(go, 350);
+  })();
+</script>
+{%- endblock -%}

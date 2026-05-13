@@ -158,8 +158,22 @@ def ride_summary(ride: str) -> dict[str, Any]:
 		as_dict=True,
 	) or {}
 	has_plate = 0
+	vehicle_photos: list[str] = []
 	if vehicle_doc.get("name"):
 		has_plate = 1 if frappe.db.get_value("Vehicle", vehicle_doc["name"], "license_plate") else 0
+		# Surface every photo the driver attached so the booker can see
+		# the actual car before committing.  Caption is intentionally
+		# dropped — the UI is a simple gallery.
+		vehicle_photos = [
+			row.photo
+			for row in frappe.get_all(
+				"Vehicle Photo",
+				filters={"parent": vehicle_doc["name"]},
+				fields=["photo"],
+				order_by="idx asc",
+			)
+			if row.photo
+		]
 	# license_number on Driver Profile is also stored encrypted.
 	has_license = 0
 	if driver_profile.get("name"):
@@ -200,6 +214,7 @@ def ride_summary(ride: str) -> dict[str, Any]:
 		"seats": vehicle_doc.get("seats_available"),
 		"has_plate": bool(has_plate),
 		"is_verified": bool(vehicle_doc.get("is_verified") or 0),
+		"photos": vehicle_photos,
 	}
 
 	# Whether the calling user has already booked this ride — useful for the
@@ -352,6 +367,20 @@ def my_vehicles_summary() -> dict[str, Any]:
 		fields=["name", "make", "model", "year", "color", "seats_available", "is_verified"],
 		order_by="creation desc",
 	)
+	# Hydrate each vehicle with its photo gallery for the publish wizard
+	# so the user sees previously-uploaded shots without re-attaching.
+	for v in vehicles:
+		v["photos"] = [
+			row.photo
+			for row in frappe.get_all(
+				"Vehicle Photo",
+				filters={"parent": v["name"]},
+				fields=["photo"],
+				order_by="idx asc",
+			)
+			if row.photo
+		]
+	user_image = frappe.db.get_value("User", user, "user_image")
 	driver_profile = frappe.db.get_value(
 		"Driver Profile",
 		{"user": user},
@@ -374,5 +403,6 @@ def my_vehicles_summary() -> dict[str, Any]:
 	return {
 		"vehicles": vehicles,
 		"driver_profile": driver_profile,
+		"driver_photo": user_image,
 		"can_publish": bool(driver_profile) and bool(vehicles),
 	}

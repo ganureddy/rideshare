@@ -38,6 +38,11 @@ website_route_rules = [
 	# and marketing material can deep-link to (e.g. /rideshare/login?next=/me).
 	{"from_route": "/rideshare/login", "to_route": "login"},
 	{"from_route": "/rideshare/signup", "to_route": "signup"},
+	# Mobile-only WebView entry points: the OAuth landing page and the
+	# Jinja realtime chat.  Both ship under www/rideshare/m/ — the rules
+	# below give them clean URLs.
+	{"from_route": "/rideshare/m/oauth-callback", "to_route": "rideshare/m/oauth_callback"},
+	{"from_route": "/rideshare/m/chat", "to_route": "rideshare/m/chat"},
 	{"from_route": "/rideshare", "to_route": "index"},
 ]
 

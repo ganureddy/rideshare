@@ -14,6 +14,9 @@ import { ProfileScreen } from "@/screens/Profile";
 import { TrackingScreen } from "@/screens/Tracking";
 import { ChatListScreen } from "@/screens/ChatList";
 import { ChatThreadScreen } from "@/screens/ChatThread";
+import { RideBookingsScreen } from "@/screens/RideBookings";
+import { MyLocationScreen } from "@/screens/MyLocation";
+import { EditProfileScreen } from "@/screens/EditProfile";
 import { colors } from "@/theme";
 
 export type RootStackParamList = {
@@ -27,8 +30,11 @@ export type RootStackParamList = {
     seats?: number;
   };
   RideDetail: { rideId: string };
+  RideBookings: { rideId: string };
   Tracking: { rideId: string; role?: "driver" | "passenger"; bookingId?: string };
   ChatThread: { threadId: string };
+  MyLocation: { role?: "driver" | "person" } | undefined;
+  EditProfile: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -99,10 +105,25 @@ export function RootNavigator() {
           <Stack.Screen name="Tabs" component={Tabs} options={{ headerShown: false }} />
           <Stack.Screen name="SearchResults" component={SearchResultsScreen} options={{ title: "Rides" }} />
           <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "Ride" }} />
+          <Stack.Screen
+            name="RideBookings"
+            component={RideBookingsScreen}
+            options={{ headerShown: false }}
+          />
           <Stack.Screen name="Tracking" component={TrackingScreen} options={{ headerShown: false }} />
           <Stack.Screen
             name="ChatThread"
             component={ChatThreadScreen}
+            options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="MyLocation"
+            component={MyLocationScreen}
+            options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="EditProfile"
+            component={EditProfileScreen}
             options={{ headerShown: false }}
           />
         </>

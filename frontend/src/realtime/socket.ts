@@ -139,3 +139,50 @@ export async function subscribeToTyping(
   sock.on("rideshare:chat:typing", handler);
   return () => sock.off("rideshare:chat:typing", handler);
 }
+
+// ---------------------------------------------------------------------------
+// Booking lifecycle — pushed by the backend whenever a booking transitions
+// (`pending_review`, `confirmed`, `cancelled`).  Both the driver's and the
+// passenger's apps subscribe so dashboards refresh without polling.
+// ---------------------------------------------------------------------------
+
+export type BookingEvent = {
+  event: "pending_review" | "confirmed" | "cancelled" | string;
+  booking: string;
+  booking_code?: string | null;
+  ride: string;
+  passenger: string;
+  status: "Pending" | "Confirmed" | "Cancelled" | "Completed" | string;
+  payment_status: string;
+  seats_booked: number;
+  instant_booking?: boolean;
+  reason?: string | null;
+};
+
+/**
+ * Subscribe to booking events.  When ``rideId`` is supplied we filter to
+ * that ride; otherwise the caller receives every booking update (used by
+ * the rider's home dashboard).
+ */
+export async function subscribeToBookings(
+  onEvent: (evt: BookingEvent) => void,
+  rideId?: string
+): Promise<() => void> {
+  const sock = await getSocket();
+  const handler = (msg: BookingEvent) => {
+    if (!msg) return;
+    if (rideId && msg.ride !== rideId) return;
+    onEvent(msg);
+  };
+  sock.on("rideshare:booking", handler);
+  if (rideId) {
+    sock.emit("subscribe", { doctype: "Ride", docname: rideId });
+    sock.emit("doc_subscribe", { doctype: "Ride", docname: rideId });
+  }
+  return () => {
+    sock.off("rideshare:booking", handler);
+    if (rideId) {
+      sock.emit("unsubscribe", { doctype: "Ride", docname: rideId });
+    }
+  };
+}

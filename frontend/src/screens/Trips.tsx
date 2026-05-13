@@ -246,7 +246,7 @@ function UpcomingTab({
           key={r.name}
           style={[s.card, shadow.card]}
           activeOpacity={0.85}
-          onPress={() => nav.navigate("Tracking", { rideId: r.name, role: "driver" })}
+          onPress={() => nav.navigate("RideBookings", { rideId: r.name })}
         >
           <View style={s.cardHead}>
             <Text style={s.cardRoute} numberOfLines={1}>
@@ -257,6 +257,21 @@ function UpcomingTab({
           <Text style={s.cardMeta}>
             {fmtDateTime(r.departure_datetime)} · {r.seats_available}/{r.seats_total} seats left · ₹{Math.round(r.price_per_seat)}
           </Text>
+          <View style={s.cardActions}>
+            <View style={s.cardLink}>
+              <Ionicons name="people-outline" size={13} color={colors.text} />
+              <Text style={s.cardLinkText}>Manage bookings</Text>
+            </View>
+            <TouchableOpacity
+              hitSlop={8}
+              activeOpacity={0.85}
+              onPress={() => nav.navigate("Tracking", { rideId: r.name, role: "driver" })}
+              style={s.cardLink}
+            >
+              <Ionicons name="navigate-outline" size={13} color={colors.text} />
+              <Text style={s.cardLinkText}>Track</Text>
+            </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       ))}
       {data && data.upcoming_rides.length === 0 ? (
@@ -393,6 +408,16 @@ const s = StyleSheet.create({
   cardHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
   cardRoute: { fontSize: 16, fontWeight: "700", color: colors.text, flex: 1, letterSpacing: -0.2 },
   cardMeta: { fontSize: 12, color: colors.soft, marginTop: 6 },
+  cardActions: {
+    flexDirection: "row",
+    gap: 16,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border
+  },
+  cardLink: { flexDirection: "row", alignItems: "center", gap: 4 },
+  cardLinkText: { fontSize: 12, fontWeight: "700", color: colors.text },
 
   activeCard: {
     backgroundColor: colors.text,

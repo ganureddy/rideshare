@@ -243,6 +243,66 @@ def send_message(thread: str, body: str, attachment: str | None = None) -> dict:
 	}
 
 
+# ---------------------------------------------------------------------------
+# WebView session bootstrap — issues a one-shot code the Jinja chat page
+# trades for a real cookie session.  Lets the mobile WebView load the
+# page without putting api_key/secret in the URL or in browser history.
+# ---------------------------------------------------------------------------
+
+_CHAT_EXCHANGE_NS = "rideshare:chat:exchange"
+_CHAT_EXCHANGE_TTL = 60   # seconds — the WebView hits the URL within ms
+
+
+@frappe.whitelist()
+def issue_chat_session_code(thread: str) -> dict:
+	"""Mint a one-shot code that the chat WebView trades for a session.
+
+	The code is bound to (current_user, thread) for 60 seconds and is
+	single-use: the redeem path deletes it after the first hit.
+	"""
+
+	import secrets
+
+	user = _user()
+	# Re-use the same authorisation rule as get_thread.
+	_authorize(thread, user)
+	code = secrets.token_hex(32)
+	frappe.cache().set_value(
+		f"{_CHAT_EXCHANGE_NS}:{code}",
+		frappe.as_json({"user": user, "thread": thread}),
+		expires_in_sec=_CHAT_EXCHANGE_TTL,
+	)
+	return {"code": code, "ttl_seconds": _CHAT_EXCHANGE_TTL}
+
+
+def consume_chat_session_code(code: str) -> dict | None:
+	"""Internal: redeem a chat session code; returns the bound payload.
+
+	Called by the Jinja chat page (server-side) — never whitelisted, so
+	the only way to redeem is through that page which we control.
+	Returns ``None`` when the code is missing / expired / malformed.
+	"""
+
+	if not code or not isinstance(code, str) or len(code) > 128:
+		return None
+	cache = frappe.cache()
+	key = f"{_CHAT_EXCHANGE_NS}:{code}"
+	raw = cache.get_value(key)
+	if not raw:
+		return None
+	try:
+		cache.delete_value(key)
+	except Exception:
+		pass
+	try:
+		data = frappe.parse_json(raw)
+	except Exception:
+		return None
+	if not (data.get("user") and data.get("thread")):
+		return None
+	return data
+
+
 @frappe.whitelist()
 def set_typing(thread: str, is_typing: int = 1) -> dict:
 	"""Broadcast a typing indicator to the other side of the chat.

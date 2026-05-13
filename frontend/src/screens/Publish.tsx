@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   Switch,
+  Image,
   KeyboardAvoidingView,
   Platform
 } from "react-native";
@@ -21,6 +22,8 @@ import { DateField } from "@/components/DateField";
 import { TimeField } from "@/components/TimeField";
 import { call } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
+import { locateAndResolve, ResolvedLocation } from "@/utils/location";
+import { absoluteFileUrl, pickAndUploadImage, pickAndUploadImages } from "@/utils/upload";
 import { colors, radii, spacing, shadow } from "@/theme";
 import {
   combineDateAndTime,
@@ -47,6 +50,7 @@ type ExistingVehicle = {
   year?: number;
   color?: string;
   seats_available?: number;
+  photos?: string[];
 };
 
 type ExistingDriverProfile = {
@@ -63,8 +67,11 @@ type ExistingDriverProfile = {
 type DriverState = {
   vehicles: ExistingVehicle[];
   driver_profile: ExistingDriverProfile;
+  driver_photo?: string | null;
   can_publish: boolean;
 };
+
+const MAX_CAR_PHOTOS = 5;
 
 type Step = "trip" | "car" | "driver" | "prefs";
 const STEPS: { id: Step; label: string; icon: any }[] = [
@@ -106,12 +113,16 @@ export function PublishScreen() {
   const [carColor, setCarColor] = useState("");
   const [carSeats, setCarSeats] = useState<number>(4);
   const [carPlate, setCarPlate] = useState("");
+  const [carPhotos, setCarPhotos] = useState<string[]>([]);
+  const [carPhotosBusy, setCarPhotosBusy] = useState(false);
 
   // Driver
   const [driverName, setDriverName] = useState("");
   const [driverBio, setDriverBio] = useState("");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseExpiry, setLicenseExpiry] = useState<Date | null>(null);
+  const [driverPhoto, setDriverPhoto] = useState<string | null>(null);
+  const [driverPhotoBusy, setDriverPhotoBusy] = useState(false);
 
   // Preferences
   const [prefMusic, setPrefMusic] = useState<"Quiet" | "Some" | "Loud">("Some");
@@ -124,12 +135,45 @@ export function PublishScreen() {
   const [driverState, setDriverState] = useState<DriverState | null>(null);
   const [enrolling, setEnrolling] = useState(false);
 
+  // Device geolocation context — resolved once on first mount via the
+  // backend's OpenCage proxy so the API key never ships in the bundle.
+  // Surfaced through the <AutoLocatePill> so the user can *explicitly*
+  // apply it to the From field; we never silently overwrite the field
+  // because the device's city often doesn't match the trip the driver
+  // wants to publish.
+  const [autoLoc, setAutoLoc] = useState<ResolvedLocation | null>(null);
+  const [locating, setLocating] = useState(true);
+
   useEffect(() => {
     loadDriverState();
     const initial = defaultDeparture();
     setDate(initial);
     setTime(initial);
   }, []);
+
+  // Auto-fetch the device location once on mount so we can offer
+  // "Use my current location" without a tap and seed the origin city.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const loc = await locateAndResolve();
+      if (cancelled) return;
+      setLocating(false);
+      if (!loc) return;
+      setAutoLoc(loc);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // NOTE: we deliberately do NOT auto-seed the From / Pickup field from
+  // the device fix.  GPS is helpful context but the city we resolve from
+  // it isn't always what the driver actually wants to publish (think:
+  // they're at home in Pune planning a Mumbai → Goa trip).  The
+  // <AutoLocatePill> still surfaces the resolved location and a "View on
+  // map" link, but applying it is now an explicit user action via
+  // `reapplyAutoLocation()`.
 
   // Pre-fill the wizard from the user's existing vehicle / driver profile so
   // they don't have to retype the same details for every ride.
@@ -142,6 +186,12 @@ export function PublishScreen() {
       if (!carYear && v.year) setCarYear(String(v.year));
       if (!carColor) setCarColor(v.color || "");
       if (v.seats_available) setCarSeats(Math.min(12, Math.max(1, v.seats_available)));
+      if (carPhotos.length === 0 && Array.isArray(v.photos) && v.photos.length > 0) {
+        setCarPhotos(v.photos.slice(0, MAX_CAR_PHOTOS));
+      }
+    }
+    if (!driverPhoto && driverState.driver_photo) {
+      setDriverPhoto(driverState.driver_photo);
     }
     const dp = driverState.driver_profile;
     if (dp) {
@@ -168,6 +218,80 @@ export function PublishScreen() {
     } catch {
       /* re-checked by the publish_ride backend */
     }
+  }
+
+  // -- Photo handlers ------------------------------------------------------
+  // Both pickers store the relative `/files/...` URL the upload endpoint
+  // returns.  The publish payload sends these straight through to the
+  // server; we only resolve them to absolute URLs at render time via
+  // absoluteFileUrl().
+
+  async function pickDriverPhoto(source: "library" | "camera") {
+    setDriverPhotoBusy(true);
+    try {
+      const f = await pickAndUploadImage({
+        source,
+        allowsEditing: true,
+        quality: 0.7,
+        isPrivate: false
+      });
+      if (f?.fileUrl) setDriverPhoto(f.fileUrl);
+    } catch (e: any) {
+      Alert.alert("Couldn't upload", e?.message ?? "Try a different photo.");
+    } finally {
+      setDriverPhotoBusy(false);
+    }
+  }
+
+  function chooseDriverPhotoSource() {
+    Alert.alert("Driver portrait", "How would you like to add your photo?", [
+      { text: "Take photo", onPress: () => pickDriverPhoto("camera") },
+      { text: "Pick from gallery", onPress: () => pickDriverPhoto("library") },
+      ...(driverPhoto
+        ? [{ text: "Remove", style: "destructive" as const, onPress: () => setDriverPhoto(null) }]
+        : []),
+      { text: "Cancel", style: "cancel" as const }
+    ]);
+  }
+
+  async function addCarPhotos() {
+    const room = MAX_CAR_PHOTOS - carPhotos.length;
+    if (room <= 0) {
+      Alert.alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
+      return;
+    }
+    setCarPhotosBusy(true);
+    try {
+      const files = await pickAndUploadImages(room, { quality: 0.7, isPrivate: false });
+      const urls = files.map((f) => f.fileUrl).filter(Boolean);
+      if (urls.length > 0) setCarPhotos((prev) => [...prev, ...urls].slice(0, MAX_CAR_PHOTOS));
+    } finally {
+      setCarPhotosBusy(false);
+    }
+  }
+
+  async function takeCarPhoto() {
+    if (carPhotos.length >= MAX_CAR_PHOTOS) {
+      Alert.alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
+      return;
+    }
+    setCarPhotosBusy(true);
+    try {
+      const f = await pickAndUploadImage({
+        source: "camera",
+        quality: 0.7,
+        isPrivate: false
+      });
+      if (f?.fileUrl) setCarPhotos((prev) => [...prev, f.fileUrl].slice(0, MAX_CAR_PHOTOS));
+    } catch (e: any) {
+      Alert.alert("Couldn't upload", e?.message ?? "Try a different photo.");
+    } finally {
+      setCarPhotosBusy(false);
+    }
+  }
+
+  function removeCarPhoto(idx: number) {
+    setCarPhotos((prev) => prev.filter((_, i) => i !== idx));
   }
 
   // Recompute the suggested price whenever both endpoints have lat/lng.
@@ -290,13 +414,15 @@ export function PublishScreen() {
           year: parseInt(carYear),
           color: carColor.trim(),
           seats_available: carSeats,
-          license_plate: carPlate.trim()
+          license_plate: carPlate.trim(),
+          photos: carPhotos
         },
         driver: {
           full_name: driverName.trim(),
           bio: driverBio.trim(),
           license_number: licenseNumber.trim(),
-          license_expiry: licenseExpiry ? toApiDate(licenseExpiry) : null
+          license_expiry: licenseExpiry ? toApiDate(licenseExpiry) : null,
+          photo: driverPhoto || null
         },
         preferences: {
           music: prefMusic,
@@ -408,6 +534,9 @@ export function PublishScreen() {
               setWomenOnly={setWomenOnly}
               description={description}
               setDescription={setDescription}
+              autoLoc={autoLoc}
+              locating={locating}
+              onViewLocationOnMap={() => nav.navigate("MyLocation", { role: "driver" })}
             />
           ) : null}
 
@@ -419,6 +548,11 @@ export function PublishScreen() {
               carColor={carColor} setCarColor={setCarColor}
               carSeats={carSeats} setCarSeats={setCarSeats}
               carPlate={carPlate} setCarPlate={setCarPlate}
+              carPhotos={carPhotos}
+              carPhotosBusy={carPhotosBusy}
+              onAddCarPhotos={addCarPhotos}
+              onTakeCarPhoto={takeCarPhoto}
+              onRemoveCarPhoto={removeCarPhoto}
             />
           ) : null}
 
@@ -428,6 +562,9 @@ export function PublishScreen() {
               driverBio={driverBio} setDriverBio={setDriverBio}
               licenseNumber={licenseNumber} setLicenseNumber={setLicenseNumber}
               licenseExpiry={licenseExpiry} setLicenseExpiry={setLicenseExpiry}
+              driverPhoto={driverPhoto}
+              driverPhotoBusy={driverPhotoBusy}
+              onPickDriverPhoto={chooseDriverPhotoSource}
             />
           ) : null}
 
@@ -488,9 +625,17 @@ function TripStep(props: {
   instant: boolean; setInstant: (b: boolean) => void;
   womenOnly: boolean; setWomenOnly: (b: boolean) => void;
   description: string; setDescription: (s: string) => void;
+  autoLoc: ResolvedLocation | null;
+  locating: boolean;
+  onViewLocationOnMap: () => void;
 }) {
   return (
     <View style={[s.card, shadow.card]}>
+      <AutoLocatePill
+        autoLoc={props.autoLoc}
+        locating={props.locating}
+        onViewMap={props.onViewLocationOnMap}
+      />
       <CityPicker
         label="From *"
         value={props.origin}
@@ -585,6 +730,11 @@ function CarStep(props: {
   carColor: string; setCarColor: (s: string) => void;
   carSeats: number; setCarSeats: (n: number) => void;
   carPlate: string; setCarPlate: (s: string) => void;
+  carPhotos: string[];
+  carPhotosBusy: boolean;
+  onAddCarPhotos: () => void;
+  onTakeCarPhoto: () => void;
+  onRemoveCarPhoto: (idx: number) => void;
 }) {
   return (
     <View style={[s.card, shadow.card]}>
@@ -654,6 +804,59 @@ function CarStep(props: {
         autoCapitalize="characters"
         autoCorrect={false}
       />
+
+      <FieldLabel style={{ marginTop: spacing(3) }}>
+        Car photos · {props.carPhotos.length}/{MAX_CAR_PHOTOS}
+      </FieldLabel>
+      <Text style={s.photoHint}>
+        Add a few angles — exterior, interior, the boot. Bookers see these before
+        confirming a seat.
+      </Text>
+      <View style={s.photoGrid}>
+        {props.carPhotos.map((url, idx) => {
+          const abs = absoluteFileUrl(url);
+          return (
+            <View key={`${url}-${idx}`} style={s.photoTile}>
+              {abs ? <Image source={{ uri: abs }} style={s.photoTileImg} /> : null}
+              <TouchableOpacity
+                style={s.photoTileRm}
+                onPress={() => props.onRemoveCarPhoto(idx)}
+                hitSlop={6}
+              >
+                <Ionicons name="close" size={14} color={colors.primaryText} />
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+        {props.carPhotos.length < MAX_CAR_PHOTOS ? (
+          <TouchableOpacity
+            style={[s.photoAdd, props.carPhotosBusy && { opacity: 0.6 }]}
+            onPress={props.onAddCarPhotos}
+            disabled={props.carPhotosBusy}
+            activeOpacity={0.85}
+          >
+            {props.carPhotosBusy ? (
+              <ActivityIndicator color={colors.text} />
+            ) : (
+              <>
+                <Ionicons name="images-outline" size={22} color={colors.text} />
+                <Text style={s.photoAddText}>Add</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      {props.carPhotos.length < MAX_CAR_PHOTOS ? (
+        <TouchableOpacity
+          style={s.photoCameraBtn}
+          onPress={props.onTakeCarPhoto}
+          disabled={props.carPhotosBusy}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="camera-outline" size={16} color={colors.text} />
+          <Text style={s.photoCameraText}>Take a photo with the camera</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -663,10 +866,59 @@ function DriverStep(props: {
   driverBio: string; setDriverBio: (s: string) => void;
   licenseNumber: string; setLicenseNumber: (s: string) => void;
   licenseExpiry: Date | null; setLicenseExpiry: (d: Date | null) => void;
+  driverPhoto: string | null;
+  driverPhotoBusy: boolean;
+  onPickDriverPhoto: () => void;
 }) {
+  const portraitUrl = absoluteFileUrl(props.driverPhoto);
   return (
     <View style={[s.card, shadow.card]}>
-      <FieldLabel required>Full name</FieldLabel>
+      <View style={s.portraitRow}>
+        <TouchableOpacity
+          style={s.portraitWrap}
+          onPress={props.onPickDriverPhoto}
+          disabled={props.driverPhotoBusy}
+          activeOpacity={0.85}
+        >
+          {portraitUrl ? (
+            <Image source={{ uri: portraitUrl }} style={s.portraitImg} />
+          ) : (
+            <View style={s.portraitPlaceholder}>
+              <Ionicons name="person" size={30} color={colors.soft} />
+            </View>
+          )}
+          <View style={s.portraitBadge}>
+            {props.driverPhotoBusy ? (
+              <ActivityIndicator color={colors.primaryText} size="small" />
+            ) : (
+              <Ionicons
+                name={portraitUrl ? "camera-reverse" : "camera"}
+                size={14}
+                color={colors.primaryText}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+        <View style={{ flex: 1 }}>
+          <Text style={s.portraitTitle}>Driver portrait</Text>
+          <Text style={s.portraitSub}>
+            Bookers see this on the ride detail screen. A clear, friendly photo
+            helps them recognise you at the pickup.
+          </Text>
+          <TouchableOpacity
+            style={s.portraitBtn}
+            onPress={props.onPickDriverPhoto}
+            disabled={props.driverPhotoBusy}
+            activeOpacity={0.85}
+          >
+            <Text style={s.portraitBtnText}>
+              {portraitUrl ? "Change photo" : "Add photo"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <FieldLabel required style={{ marginTop: spacing(3) }}>Full name</FieldLabel>
       <TextInput
         style={s.boxInput}
         value={props.driverName}
@@ -750,6 +1002,55 @@ function PrefsStep(props: {
 // ---------------------------------------------------------------------------
 // Atoms
 // ---------------------------------------------------------------------------
+
+function AutoLocatePill({
+  autoLoc,
+  locating,
+  onViewMap
+}: {
+  autoLoc: ResolvedLocation | null;
+  locating: boolean;
+  /** Tap target — opens the live-location map.  Intentionally NOT
+   *  wired to the From/Pickup field anymore: GPS is shown for context
+   *  only, the user picks the actual origin city by hand. */
+  onViewMap?: () => void;
+}) {
+  if (locating) {
+    return (
+      <View style={s.locatePill}>
+        <ActivityIndicator size="small" color={colors.text} />
+        <Text style={s.locatePillText}>Detecting your current location…</Text>
+      </View>
+    );
+  }
+  if (!autoLoc) {
+    return (
+      <View style={s.locatePill}>
+        <Ionicons name="location-outline" size={16} color={colors.soft} />
+        <Text style={[s.locatePillText, { color: colors.soft }]} numberOfLines={1}>
+          Allow location access for live trip features
+        </Text>
+      </View>
+    );
+  }
+  const label = autoLoc.city || autoLoc.area || autoLoc.address || "your location";
+  return (
+    <TouchableOpacity
+      style={[s.locatePill, s.locatePillReady]}
+      onPress={onViewMap}
+      activeOpacity={0.85}
+      disabled={!onViewMap}
+    >
+      <Ionicons name="locate" size={16} color={colors.primaryText} />
+      <Text style={[s.locatePillText, s.locatePillTextReady]} numberOfLines={1}>
+        You're near {label}
+      </Text>
+      {onViewMap ? (
+        <Ionicons name="map-outline" size={14} color={colors.primaryText} />
+      ) : null}
+    </TouchableOpacity>
+  );
+}
 
 function FieldLabel({
   children,
@@ -939,6 +1240,34 @@ const s = StyleSheet.create({
     borderColor: colors.border
   },
 
+  locatePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginBottom: spacing(3)
+  },
+  locatePillReady: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary
+  },
+  locatePillText: { flex: 1, fontSize: 12, color: colors.text, fontWeight: "700" },
+  locatePillTextReady: { color: colors.primaryText },
+  locateMapLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingTop: 6,
+    paddingBottom: 0,
+    alignSelf: "flex-end"
+  },
+  locateMapLinkText: { color: colors.brand, fontSize: 11, fontWeight: "700" },
+
   label: {
     fontSize: 12,
     color: colors.soft,
@@ -1103,5 +1432,113 @@ const s = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 14
   },
-  nextBtnText: { color: colors.primaryText, fontWeight: "700", fontSize: 15 }
+  nextBtnText: { color: colors.primaryText, fontWeight: "700", fontSize: 15 },
+
+  // Driver portrait picker
+  portraitRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingBottom: spacing(3),
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border
+  },
+  portraitWrap: { width: 84, height: 84, position: "relative" },
+  portraitImg: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: colors.bgAlt
+  },
+  portraitPlaceholder: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: colors.bgAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: colors.borderStrong,
+    borderStyle: "dashed"
+  },
+  portraitBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.brand,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: colors.card
+  },
+  portraitTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
+  portraitSub: { fontSize: 12, color: colors.soft, marginTop: 2, lineHeight: 17 },
+  portraitBtn: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.border
+  },
+  portraitBtnText: { fontSize: 12, fontWeight: "700", color: colors.text },
+
+  // Car gallery
+  photoHint: { fontSize: 12, color: colors.soft, marginBottom: 8, lineHeight: 17 },
+  photoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  photoTile: {
+    width: 88,
+    height: 88,
+    borderRadius: radii.md,
+    overflow: "hidden",
+    backgroundColor: colors.bgAlt,
+    position: "relative"
+  },
+  photoTileImg: { width: 88, height: 88, resizeMode: "cover" },
+  photoTileRm: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  photoAdd: {
+    width: 88,
+    height: 88,
+    borderRadius: radii.md,
+    borderWidth: 1.5,
+    borderColor: colors.borderStrong,
+    borderStyle: "dashed",
+    backgroundColor: colors.bgAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4
+  },
+  photoAddText: { fontSize: 11, color: colors.text, fontWeight: "700" },
+  photoCameraBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card
+  },
+  photoCameraText: { fontSize: 12, fontWeight: "700", color: colors.text }
 });

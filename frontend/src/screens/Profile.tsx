@@ -7,7 +7,8 @@ import {
   Alert,
   ScrollView,
   ActivityIndicator,
-  Linking
+  Linking,
+  Image
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
@@ -15,6 +16,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/auth/AuthContext";
 import { call } from "@/api/client";
+import { absoluteFileUrl } from "@/utils/upload";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -61,6 +63,16 @@ export function ProfileScreen() {
     nav.navigate("Tabs" as any, { screen: "Trips", params: { startTab: "history" } });
   }
 
+  function openMyLocation() {
+    nav.navigate("MyLocation", { role: isDriver ? "driver" : "person" });
+  }
+
+  function openEditProfile() {
+    nav.navigate("EditProfile");
+  }
+
+  const portrait = absoluteFileUrl((profile as any)?.user_image);
+
   return (
     <SafeAreaView style={s.shell} edges={["top"]}>
       <ScrollView contentContainerStyle={{ padding: spacing(4), paddingBottom: spacing(8) }}>
@@ -68,13 +80,25 @@ export function ProfileScreen() {
 
         <View style={[s.card, shadow.card]}>
           <View style={s.headerRow}>
-            <View style={s.avatar}>
-              <Text style={s.avatarText}>{initials}</Text>
-            </View>
+            {portrait ? (
+              <Image source={{ uri: portrait }} style={s.avatarImg} />
+            ) : (
+              <View style={s.avatar}>
+                <Text style={s.avatarText}>{initials}</Text>
+              </View>
+            )}
             <View style={{ flex: 1 }}>
               <Text style={s.name}>{profile?.full_name || profile?.first_name || "Rider"}</Text>
               <Text style={s.meta}>{mobileNo || user}</Text>
             </View>
+            <TouchableOpacity
+              style={s.editBtn}
+              onPress={openEditProfile}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="create-outline" size={14} color={colors.text} />
+              <Text style={s.editBtnText}>Edit</Text>
+            </TouchableOpacity>
           </View>
 
           {isDriver ? (
@@ -93,9 +117,11 @@ export function ProfileScreen() {
         </View>
 
         <View style={[s.card, shadow.card, { marginTop: spacing(3), padding: 0 }]}>
+          <Row icon="person-outline" label="Edit profile" onPress={openEditProfile} />
           <Row icon="receipt-outline" label="Booking history" onPress={openHistory} />
+          <Row icon="locate-outline" label="My location on map" onPress={openMyLocation} />
           <Row icon="card-outline" label="Payment methods" onPress={() => {}} />
-          <Row icon="shield-checkmark-outline" label="Privacy & safety" onPress={() => {}} />
+          <Row icon="shield-checkmark-outline" label="Privacy & safety" onPress={() => {}} last />
         </View>
 
         {/* Helpline lives ONLY in the Account tab. */}
@@ -209,7 +235,20 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
+  avatarImg: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.bgAlt },
   avatarText: { color: colors.primaryText, fontSize: 20, fontWeight: "800" },
+  editBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.border
+  },
+  editBtnText: { fontSize: 12, fontWeight: "700", color: colors.text },
   name: { fontSize: 20, fontWeight: "800", color: colors.text, letterSpacing: -0.3 },
   meta: { color: colors.soft, marginTop: 2, fontSize: 14 },
 

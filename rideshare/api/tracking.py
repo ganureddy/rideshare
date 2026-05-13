@@ -199,6 +199,7 @@ def start_trip(ride: str) -> dict:
 		message={"ride": ride_name, "status": "InProgress"},
 		room=f"ride:{ride_name}",
 	)
+	_push_trip_status(ride_name, event="started")
 	return {"status": "InProgress"}
 
 
@@ -216,7 +217,45 @@ def complete_trip(ride: str) -> dict:
 		message={"ride": ride_name, "status": "Completed"},
 		room=f"ride:{ride_name}",
 	)
+	_push_trip_status(ride_name, event="completed")
 	return {"status": "Completed"}
+
+
+def _push_trip_status(ride_name: str, *, event: str) -> None:
+	"""Notify every confirmed passenger when the driver starts / ends the trip."""
+
+	try:
+		from rideshare.utils.push import notify_user
+	except Exception:
+		return
+
+	ride = frappe.db.get_value(
+		"Ride",
+		ride_name,
+		["origin_city", "destination_city"],
+		as_dict=True,
+	) or {}
+	route = f"{ride.get('origin_city') or 'pickup'} → {ride.get('destination_city') or 'destination'}"
+
+	passengers = frappe.get_all(
+		"Booking",
+		filters={
+			"ride": ride_name,
+			"status": ["in", ("Confirmed", "InProgress")],
+		},
+		pluck="passenger",
+	)
+
+	if event == "started":
+		title = "Your ride has started"
+		body = f"The driver is on the way for {route}. Tap to follow live."
+	else:
+		title = "Trip completed"
+		body = f"You've arrived in {ride.get('destination_city') or 'your destination'}. Hope it went well!"
+
+	data = {"type": "trip", "event": event, "ride": ride_name}
+	for u in set(passengers):
+		notify_user(u, title=title, body=body, data=data, channel="trip")
 
 
 # ---------------------------------------------------------------------------

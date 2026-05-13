@@ -35,10 +35,16 @@ export const colors = {
   pickupPin: "#1F8A4C",
   dropoffPin: "#D32F2F",
 
+  // Brand blue — used for app icon background, splash, and notification
+  // accent.  Keep this in sync with `app.json::splash.backgroundColor` /
+  // `android.adaptiveIcon.backgroundColor`.
+  brand: "#1976D2",
+  brandDark: "#0F5AA0",
+
   // Backwards-compat aliases (kept so legacy references compile while we
   // migrate the codebase; new code should use the names above).
-  blue: "#000000",
-  blueDark: "#1A1A1A"
+  blue: "#1976D2",
+  blueDark: "#0F5AA0"
 };
 
 export const radii = { sm: 6, md: 10, lg: 14, xl: 20, pill: 999 };

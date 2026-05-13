@@ -86,6 +86,64 @@ class ChatMessage(Document):
 			room=f"chat:{self.thread}",
 			after_commit=True,
 		)
+		self._push_notification()
+
+	def _push_notification(self) -> None:
+		"""Send a WhatsApp-style push to the recipient(s) of the message.
+
+		System messages aren't worth interrupting the user for, and we
+		never push the sender their own echo.
+		"""
+
+		if self.is_system:
+			return
+
+		try:
+			from rideshare.utils.push import notify_user
+		except Exception:
+			return
+
+		thread = frappe.db.get_value(
+			"Chat Thread",
+			self.thread,
+			["driver", "passenger", "thread_type", "subject", "ride", "booking"],
+			as_dict=True,
+		)
+		if not thread:
+			return
+
+		# Sender display name for the notification title.
+		sender_name = (
+			frappe.db.get_value("User", self.sender, "full_name") or self.sender
+		)
+
+		# Truncate body to keep the notification compact.
+		preview = (self.body or "").strip().replace("\n", " ")
+		if len(preview) > 140:
+			preview = preview[:137] + "…"
+
+		recipients: set[str] = set()
+		if thread.driver and thread.driver != self.sender:
+			recipients.add(thread.driver)
+		if thread.passenger and thread.passenger != self.sender:
+			recipients.add(thread.passenger)
+
+		data = {
+			"type": "chat",
+			"thread": self.thread,
+			"booking": thread.get("booking"),
+			"ride": thread.get("ride"),
+			"sender": self.sender,
+		}
+
+		for u in recipients:
+			notify_user(
+				u,
+				title=sender_name,
+				body=preview or "📎 Attachment",
+				data=data,
+				channel="chat",
+			)
 
 
 def _has_support_role(user: str) -> bool:

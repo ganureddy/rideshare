@@ -4,12 +4,39 @@
                    Transaction, returning the gateway order ID for the
                    client to checkout against.
 
-`confirm_payment` → verifies the gateway signature, marks the booking
-                   `Confirmed` + payment `Held`.  Idempotent on
-                   gateway_payment_id.
+`confirm_payment` → verifies the gateway signature, holds the funds and
+                   transitions the booking based on the ride's
+                   ``instant_booking`` flag:
 
-`cancel_booking`  → applies the cancellation policy and creates a
-                   Cancellation Log + refund Payment Transaction.
+                     * instant_booking == 1 → status ``Confirmed`` (legacy
+                       flow — driver opted into auto-acceptance).
+                     * instant_booking == 0 → status ``Pending``, awaiting
+                       the driver's review.  The booker may cancel for a
+                       full refund while it is still Pending, and the
+                       driver may either confirm or decline through
+                       :func:`driver_confirm_booking` /
+                       :func:`driver_cancel_booking`.
+
+                   Either way the payment is captured and ``payment_status``
+                   becomes ``Held``.  Idempotent on ``gateway_payment_id``.
+
+`cancel_booking`        → passenger-initiated cancel.  Pending bookings
+                         (driver hasn't accepted yet) get a 100% refund;
+                         everything else uses the ride's cancellation
+                         policy.
+
+`driver_confirm_booking` → driver accepts a Pending booking.  Status
+                          flips to ``Confirmed``; the chat thread between
+                          driver and rider is auto-opened.
+
+`driver_cancel_booking`  → driver declines a Pending or removes a
+                          Confirmed rider before the trip starts.  Always
+                          refunds 100% (driver-side fault).
+
+`list_ride_bookings`     → driver-only listing of every booking on one of
+                          their rides (Pending, Confirmed, Cancelled),
+                          with display-friendly passenger info for the
+                          mobile management screen.
 
 `my_bookings`     → list bookings for the current user.
 """
@@ -175,12 +202,17 @@ def confirm_payment(
 		txn.captured_on = now_datetime()
 		txn.save(ignore_permissions=True)
 
-	booking_doc.status = "Confirmed"
+	# Honour the ride's instant_booking flag.  When the driver opted into
+	# auto-acceptance we go straight to Confirmed; otherwise the booking
+	# stays Pending and the driver decides via driver_confirm_booking.
+	instant = int(frappe.db.get_value("Ride", booking_doc.ride, "instant_booking") or 0)
+	booking_doc.status = "Confirmed" if instant else "Pending"
 	booking_doc.payment_status = "Held"
 	booking_doc.save(ignore_permissions=True)
 
-	# Auto-open the driver↔passenger chat thread for this booking.
-	# Failure here mustn't block the confirm flow.
+	# Auto-open the driver↔passenger chat thread for this booking — useful
+	# in both flows: the booker can talk to the driver while the request is
+	# under review.  Failure here mustn't block the confirm flow.
 	try:
 		from rideshare.api.chat import start_booking_chat as _open_chat
 
@@ -190,6 +222,11 @@ def confirm_payment(
 			title="Could not open booking chat after payment confirm",
 			message=frappe.get_traceback(),
 		)
+
+	_broadcast_booking_change(
+		booking_doc,
+		event="confirmed" if instant else "pending_review",
+	)
 
 	frappe.db.commit()
 
@@ -244,6 +281,16 @@ def cancel_booking(booking: str, reason: str | None = None) -> dict:
 	if doc.status in ("Cancelled", "Completed"):
 		return {"status": doc.status, "noop": True}
 
+	# Pending = the driver hasn't accepted yet.  Riders are never charged
+	# for changing their mind in that window, so we refund 100% regardless
+	# of the ride's policy.
+	if doc.status == "Pending":
+		return _refund_booking(
+			doc.name,
+			percentage=100,
+			reason=reason or "Passenger cancelled before driver confirmation",
+		)
+
 	ride = frappe.get_doc("Ride", doc.ride)
 	hours = max(time_diff_in_hours(get_datetime(ride.departure_datetime), now_datetime()), 0)
 	pct = _refund_percentage(ride.cancellation_policy or "Moderate", hours)
@@ -297,6 +344,8 @@ def _refund_booking(booking: str, *, percentage: int, reason: str) -> dict:
 		refund_txn.raw_response = json.dumps({"reason": reason, "percentage": percentage})
 		refund_txn.insert(ignore_permissions=True)
 
+	_broadcast_booking_change(doc, event="cancelled", extra={"reason": reason})
+
 	frappe.db.commit()
 	return {
 		"booking": doc.name,
@@ -305,6 +354,389 @@ def _refund_booking(booking: str, *, percentage: int, reason: str) -> dict:
 		"refund_percentage": percentage,
 		"refund_amount": refund_amount,
 	}
+
+
+# ---------------------------------------------------------------------------
+# Driver-side booking management
+# ---------------------------------------------------------------------------
+
+
+def _driver_assert_owner(booking_doc, user: str) -> str:
+	"""Return the ride name after asserting ``user`` drives it."""
+
+	driver = frappe.db.get_value("Ride", booking_doc.ride, "driver")
+	if not driver:
+		frappe.throw(_("Ride not found."))
+	if driver != user:
+		frappe.throw(
+			_("Only the ride's driver can manage these bookings."),
+			frappe.PermissionError,
+		)
+	return booking_doc.ride
+
+
+@frappe.whitelist()
+def driver_confirm_booking(booking: str) -> dict:
+	"""Driver accepts a Pending booking → status ``Confirmed``.
+
+	Idempotent: re-confirming an already-Confirmed booking returns a noop.
+	A Cancelled or Completed booking can't be revived from here.
+	"""
+
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	doc = frappe.get_doc("Booking", booking)
+	_driver_assert_owner(doc, user)
+
+	if doc.status == "Confirmed":
+		return {"booking": doc.name, "status": doc.status, "noop": True}
+	if doc.status in ("Cancelled", "Completed"):
+		frappe.throw(_("Booking is {0}; cannot confirm.").format(doc.status))
+
+	# Re-validate seat capacity at confirm time so we don't overshoot if
+	# multiple Pending requests landed for the same ride.
+	ride = frappe.get_doc("Ride", doc.ride)
+	other_seats = (
+		frappe.db.sql(
+			"""SELECT COALESCE(SUM(seats_booked), 0)
+			   FROM `tabBooking`
+			   WHERE ride = %s AND name != %s
+			     AND status IN ('Confirmed', 'Completed')""",
+			(doc.ride, doc.name),
+		)[0][0]
+		or 0
+	)
+	free = int(ride.seats_total or 0) - int(other_seats)
+	if int(doc.seats_booked or 0) > free:
+		frappe.throw(
+			_(
+				"Only {0} seat(s) are still free on this ride — can't confirm "
+				"a {1}-seat booking."
+			).format(max(free, 0), int(doc.seats_booked or 0))
+		)
+
+	doc.status = "Confirmed"
+	doc.save(ignore_permissions=True)
+
+	# Make sure the booking chat thread exists so the rider can be reached.
+	try:
+		from rideshare.api.chat import start_booking_chat as _open_chat
+
+		_open_chat(doc.name)
+	except Exception:
+		frappe.log_error(
+			title="Could not open booking chat after driver confirm",
+			message=frappe.get_traceback(),
+		)
+
+	_broadcast_booking_change(doc, event="confirmed")
+	frappe.db.commit()
+	return {
+		"booking": doc.name,
+		"status": doc.status,
+		"payment_status": doc.payment_status,
+	}
+
+
+@frappe.whitelist()
+def driver_cancel_booking(booking: str, reason: str | None = None) -> dict:
+	"""Driver removes a rider from their ride.
+
+	Allowed any time before the ride is ``InProgress`` or ``Completed``.
+	Always refunds 100% — the rider isn't responsible for a driver-side
+	removal.  Works for both Pending (decline) and Confirmed (remove)
+	statuses.
+	"""
+
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	doc = frappe.get_doc("Booking", booking)
+	_driver_assert_owner(doc, user)
+
+	if doc.status in ("Cancelled", "Completed"):
+		return {"booking": doc.name, "status": doc.status, "noop": True}
+
+	ride_status = frappe.db.get_value("Ride", doc.ride, "status")
+	if ride_status in ("InProgress", "Completed"):
+		frappe.throw(
+			_("Ride is {0}; passengers can't be removed at this stage.").format(ride_status)
+		)
+
+	tag = "Driver declined the request" if doc.status == "Pending" else "Driver removed the rider"
+	return _refund_booking(
+		doc.name,
+		percentage=100,
+		reason=f"{tag}: {reason}" if reason else tag,
+	)
+
+
+@frappe.whitelist()
+def list_ride_bookings(ride: str) -> dict:
+	"""Driver-only view of every booking on one of their rides.
+
+	Returns the seat ledger plus a hydrated list grouped by status so the
+	mobile management screen can render Pending / Confirmed / Cancelled
+	tabs without further queries.
+	"""
+
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	ride_row = frappe.db.get_value(
+		"Ride",
+		ride,
+		[
+			"name",
+			"driver",
+			"status",
+			"origin_city",
+			"destination_city",
+			"departure_datetime",
+			"seats_total",
+			"seats_available",
+			"price_per_seat",
+			"instant_booking",
+		],
+		as_dict=True,
+	)
+	if not ride_row:
+		frappe.throw(_("Ride not found."))
+	if ride_row.driver != user:
+		frappe.throw(_("Not your ride."), frappe.PermissionError)
+
+	rows = frappe.db.sql(
+		"""SELECT b.name, b.status, b.payment_status, b.seats_booked,
+		          b.total_amount, b.booking_code, b.passenger_message,
+		          b.booked_on,
+		          b.passenger,
+		          u.full_name AS passenger_name,
+		          u.user_image AS passenger_image,
+		          u.mobile_no AS passenger_mobile
+		   FROM `tabBooking` b
+		   JOIN `tabUser` u ON u.name = b.passenger
+		   WHERE b.ride = %s
+		   ORDER BY
+		     FIELD(b.status, 'Pending', 'Confirmed', 'Completed', 'Cancelled'),
+		     b.booked_on ASC""",
+		ride,
+		as_dict=True,
+	)
+
+	# Phone numbers for non-confirmed bookers stay hidden — same trust
+	# boundary as ride_summary.contacts.
+	for r in rows:
+		if r["status"] not in ("Confirmed", "Completed"):
+			r["passenger_mobile"] = None
+
+	pending_seats = sum(
+		int(r.get("seats_booked") or 0) for r in rows if r["status"] == "Pending"
+	)
+	confirmed_seats = sum(
+		int(r.get("seats_booked") or 0)
+		for r in rows
+		if r["status"] in ("Confirmed", "Completed")
+	)
+
+	return {
+		"ride": ride_row,
+		"bookings": rows,
+		"counts": {
+			"pending": sum(1 for r in rows if r["status"] == "Pending"),
+			"confirmed": sum(1 for r in rows if r["status"] == "Confirmed"),
+			"cancelled": sum(1 for r in rows if r["status"] == "Cancelled"),
+			"pending_seats": pending_seats,
+			"confirmed_seats": confirmed_seats,
+		},
+	}
+
+
+# ---------------------------------------------------------------------------
+# Realtime — fan booking lifecycle changes out to driver + passenger so
+# their dashboards / detail screens refresh without polling.
+# ---------------------------------------------------------------------------
+
+
+def _broadcast_booking_change(
+	booking_doc, *, event: str, extra: dict | None = None
+) -> None:
+	"""Push a booking status update to interested parties.
+
+	Three delivery channels are used so the message lands regardless of
+	which screen the user has open:
+
+	  * ``user=<driver>``    — driver's personal channel (dashboard).
+	  * ``user=<passenger>`` — booker's personal channel (RideDetail).
+	  * ``room=ride:<ride>`` — anyone watching the live tracking room.
+
+	A best-effort Expo push is sent in parallel so the right party hears
+	about the change even if the app is in the background.
+	"""
+
+	try:
+		ride = frappe.db.get_value(
+			"Ride",
+			booking_doc.ride,
+			["driver", "instant_booking", "origin_city", "destination_city"],
+			as_dict=True,
+		)
+	except Exception:
+		ride = None
+	driver = (ride or {}).get("driver")
+
+	payload = {
+		"event": event,
+		"booking": booking_doc.name,
+		"booking_code": booking_doc.booking_code,
+		"ride": booking_doc.ride,
+		"passenger": booking_doc.passenger,
+		"status": booking_doc.status,
+		"payment_status": booking_doc.payment_status,
+		"seats_booked": int(booking_doc.seats_booked or 0),
+		"instant_booking": bool((ride or {}).get("instant_booking") or 0),
+	}
+	if extra:
+		payload.update(extra)
+
+	# Per-user delivery: most reliable across nginx + socketio configs.
+	for u in {driver, booking_doc.passenger}:
+		if not u:
+			continue
+		try:
+			frappe.publish_realtime(
+				event="rideshare:booking",
+				message=payload,
+				user=u,
+				after_commit=False,
+			)
+		except Exception:
+			frappe.log_error(
+				title="Booking realtime publish failed",
+				message=frappe.get_traceback(),
+			)
+
+	# Room delivery for live-tracking listeners (driver + every confirmed
+	# rider already subscribed to ride:<id>).
+	try:
+		frappe.publish_realtime(
+			event="rideshare:booking",
+			message=payload,
+			room=f"ride:{booking_doc.ride}",
+			after_commit=False,
+		)
+	except Exception:
+		pass
+
+	# Push notifications — pick recipient + copy by event type.
+	_push_for_booking_event(
+		booking_doc,
+		event=event,
+		ride_row=ride or {},
+		driver=driver,
+		extra=extra or {},
+	)
+
+
+def _push_for_booking_event(
+	booking_doc,
+	*,
+	event: str,
+	ride_row: dict,
+	driver: str | None,
+	extra: dict,
+) -> None:
+	"""Translate a lifecycle event into a Expo push for the right party."""
+
+	try:
+		from rideshare.utils.push import notify_user
+	except Exception:
+		return
+
+	def _name(user_id: str | None) -> str:
+		if not user_id:
+			return "Someone"
+		return (
+			frappe.db.get_value("User", user_id, "full_name") or user_id
+		)
+
+	route = (
+		f"{ride_row.get('origin_city') or 'pickup'} → "
+		f"{ride_row.get('destination_city') or 'destination'}"
+	)
+	seats = int(booking_doc.seats_booked or 0)
+	seat_label = f"{seats} seat" if seats == 1 else f"{seats} seats"
+	data = {
+		"type": "booking",
+		"event": event,
+		"booking": booking_doc.name,
+		"ride": booking_doc.ride,
+		"status": booking_doc.status,
+	}
+
+	if event == "pending_review":
+		# Driver gets notified that someone wants in.
+		if not driver:
+			return
+		notify_user(
+			driver,
+			title="New booking request",
+			body=f"{_name(booking_doc.passenger)} wants {seat_label} on {route}.",
+			data=data,
+			channel="bookings",
+		)
+
+	elif event == "confirmed":
+		# Passenger learns their seat is locked in.  Skip if it was an
+		# instant_booking (the passenger just paid; their UI already
+		# reflects the confirmation).
+		if ride_row.get("instant_booking"):
+			return
+		notify_user(
+			booking_doc.passenger,
+			title="Booking confirmed",
+			body=f"Driver accepted your seat on {route}. See you there!",
+			data=data,
+			channel="bookings",
+		)
+
+	elif event == "cancelled":
+		# The notification target depends on who triggered it; we can
+		# infer this from the cancellation log we just wrote.
+		cancelled_by = _last_cancelled_by(booking_doc.name)
+		# Passenger-initiated → notify driver.  Anything else (driver
+		# decline / remove) → notify passenger.
+		if cancelled_by and cancelled_by == booking_doc.passenger:
+			if driver:
+				notify_user(
+					driver,
+					title="Booking cancelled",
+					body=f"{_name(booking_doc.passenger)} cancelled their {seat_label} on {route}.",
+					data=data,
+					channel="bookings",
+				)
+		else:
+			reason = (extra or {}).get("reason") or "Driver removed your booking."
+			notify_user(
+				booking_doc.passenger,
+				title="Booking cancelled",
+				body=f"Your seat on {route} was cancelled. {reason}".strip(),
+				data=data,
+				channel="bookings",
+			)
+
+
+def _last_cancelled_by(booking_name: str) -> str | None:
+	row = frappe.db.get_value(
+		"Cancellation Log",
+		{"booking": booking_name},
+		"cancelled_by",
+		order_by="creation desc",
+	)
+	return row or None
 
 
 @frappe.whitelist()

@@ -91,7 +91,13 @@ def _ensure_settings() -> None:
 	doc.pending_booking_ttl_minutes = doc.pending_booking_ttl_minutes or 30
 	doc.default_gateway = doc.default_gateway or "demo"
 	doc.sms_provider = doc.sms_provider or "log"
-	doc.maps_provider = doc.maps_provider or "OSM"
+	# Maps default: OpenCage covers India well and the API key never ships
+	# in the mobile bundle (the device hits the backend proxy).  Seed the
+	# product-team dev key so a fresh install has working geocoding;
+	# rotate to a private key in Rideshare Settings for production.
+	doc.maps_provider = doc.maps_provider or "OpenCage"
+	if not (doc.opencage_api_key or "").strip():
+		doc.opencage_api_key = "00e54899cd244e5eab42ff084058eb94"
 	doc.currency = doc.currency or "INR"
 	doc.from_email = doc.from_email or "noreply@rideshare.local"
 	if doc.auto_verify_drivers is None:

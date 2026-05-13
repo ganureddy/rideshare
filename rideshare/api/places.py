@@ -15,6 +15,7 @@ A daily ratelimit is applied per IP to keep the bill bounded.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import frappe
@@ -27,6 +28,18 @@ GOOGLE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 GOOGLE_GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 OPENCAGE_GEOCODE_URL = "https://api.opencagedata.com/geocode/v1/json"
 DEFAULT_TIMEOUT = 6  # seconds — Google p95 is well under this
+
+# `requests` exception messages embed the request URL, which for these
+# providers always includes ?key=<API_KEY>.  Run every logged message
+# through this redactor so we don't leak credentials into the Error Log
+# DocType (which is readable by every System Manager).
+_KEY_QS_RE = re.compile(r"([?&](?:key|api_key|access_token)=)[^&\s]+", re.IGNORECASE)
+
+
+def _redact(text: str) -> str:
+	if not text:
+		return text
+	return _KEY_QS_RE.sub(r"\1[REDACTED]", text)
 
 
 def _api_key() -> str:
@@ -103,13 +116,13 @@ def autocomplete(
 		resp = requests.get(GOOGLE_AC_URL, params=params, timeout=DEFAULT_TIMEOUT)
 		resp.raise_for_status()
 	except requests.RequestException as exc:
-		frappe.log_error(message=str(exc), title="Places autocomplete failed")
+		frappe.log_error(message=_redact(str(exc)), title="Places autocomplete failed")
 		frappe.throw(_("Map service unavailable. Please try again."))
 
 	data = resp.json()
 	if data.get("status") not in ("OK", "ZERO_RESULTS"):
 		frappe.log_error(
-			message=str(data),
+			message=_redact(str(data)),
 			title=f"Google Places error: {data.get('status')}",
 		)
 		return {"predictions": []}
@@ -156,7 +169,7 @@ def place_details(place_id: str, session_token: str | None = None) -> dict[str, 
 		resp = requests.get(GOOGLE_DETAILS_URL, params=params, timeout=DEFAULT_TIMEOUT)
 		resp.raise_for_status()
 	except requests.RequestException as exc:
-		frappe.log_error(message=str(exc), title="Places details failed")
+		frappe.log_error(message=_redact(str(exc)), title="Places details failed")
 		frappe.throw(_("Map service unavailable."))
 
 	data = resp.json()
@@ -200,7 +213,7 @@ def reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
 		resp = requests.get(GOOGLE_GEOCODE_URL, params=params, timeout=DEFAULT_TIMEOUT)
 		resp.raise_for_status()
 	except requests.RequestException as exc:
-		frappe.log_error(message=str(exc), title="Reverse geocode failed")
+		frappe.log_error(message=_redact(str(exc)), title="Reverse geocode failed")
 		frappe.throw(_("Map service unavailable."))
 
 	data = resp.json()
@@ -239,11 +252,11 @@ def _opencage_call(params: dict[str, Any]) -> list[dict]:
 		resp = requests.get(OPENCAGE_GEOCODE_URL, params=full_params, timeout=DEFAULT_TIMEOUT)
 		resp.raise_for_status()
 	except requests.RequestException as exc:
-		frappe.log_error(message=str(exc), title="OpenCage call failed")
+		frappe.log_error(message=_redact(str(exc)), title="OpenCage call failed")
 		frappe.throw(_("Map service unavailable. Please try again."))
 	data = resp.json()
 	if data.get("status", {}).get("code") not in (200, None):
-		frappe.log_error(message=str(data), title="OpenCage error")
+		frappe.log_error(message=_redact(str(data)), title="OpenCage error")
 		return []
 	return data.get("results") or []
 
@@ -331,23 +344,43 @@ def _opencage_place_details(place_id: str) -> dict[str, Any]:
 
 
 def _opencage_reverse_geocode(lat: float, lng: float) -> dict[str, Any]:
-	results = _opencage_call({"q": f"{lat}+{lng}", "limit": 1})
+	results = _opencage_call({"q": f"{lat}+{lng}", "limit": 1, "language": "en"})
 	if not results:
 		return {"address": None, "lat": lat, "lng": lng}
 	r = results[0]
 	c = r.get("components") or {}
+	a = r.get("annotations") or {}
+	# Surface the long form so callers (HTML map, dashboards, audit logs)
+	# can render the OpenCage breakdown without re-querying.
 	return {
 		"address": r.get("formatted"),
+		"formatted": r.get("formatted"),
 		"place_id": f"oc:{lat},{lng}",
 		"lat": lat,
 		"lng": lng,
+		"confidence": r.get("confidence"),
 		"city": c.get("city")
 		or c.get("town")
 		or c.get("village")
 		or c.get("county")
 		or c.get("state_district"),
 		"state": c.get("state"),
+		"state_code": c.get("state_code"),
+		"state_district": c.get("state_district"),
+		"county": c.get("county"),
 		"country": c.get("country"),
+		"country_code": c.get("country_code"),
+		"flag": a.get("flag"),
+		"timezone": (a.get("timezone") or {}).get("name"),
+		"postcode": c.get("postcode"),
+		"suburb": c.get("suburb")
+		or c.get("neighbourhood")
+		or c.get("residential"),
+		"road": c.get("road"),
+		"road_type": c.get("road_type"),
+		"category": c.get("_category") or r.get("_category"),
+		"type": c.get("_type") or r.get("_type"),
+		# Backwards-compatible alias used by other screens.
 		"area": c.get("residential")
 		or c.get("neighbourhood")
 		or c.get("suburb")

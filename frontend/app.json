@@ -10,7 +10,14 @@
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#000000"
+      "backgroundColor": "#1976D2"
+    },
+    "primaryColor": "#1976D2",
+    "notification": {
+      "icon": "./assets/adaptive-icon.png",
+      "color": "#1976D2",
+      "androidMode": "default",
+      "iosDisplayInForeground": true
     },
     "assetBundlePatterns": ["**/*"],
     "ios": {
@@ -29,7 +36,7 @@
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#1976D2"
       },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -47,6 +54,21 @@
           "locationAlwaysAndWhenInUsePermission": "Allow Rideshare to use your location for live trip tracking.",
           "isIosBackgroundLocationEnabled": true,
           "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/adaptive-icon.png",
+          "color": "#1976D2",
+          "defaultChannel": "default"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Rideshare uses photos to attach your driver portrait and car pictures to a ride.",
+          "cameraPermission": "Rideshare uses your camera to capture your driver portrait and car pictures."
         }
       ]
     ],
