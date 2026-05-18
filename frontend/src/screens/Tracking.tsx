@@ -423,6 +423,8 @@ export function TrackingScreen() {
       },
       { duration: 700 }
     );
+    // Only re-pan on coordinate change — full driverLoc object churns every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [driverLoc?.lat, driverLoc?.lng]);
 
   async function startTrip() {

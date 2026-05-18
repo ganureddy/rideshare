@@ -99,6 +99,8 @@ export function CityPicker({
       .then((c) => setItems(c))
       .catch((e) => setErr(e?.message ?? "Couldn't load cities."))
       .finally(() => setLoading(false));
+    // We deliberately re-run only when the modal opens; query has its own effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Debounced server-side search: fires on every keystroke once the user has

@@ -4,7 +4,6 @@ import {
   Text,
   FlatList,
   TouchableOpacity,
-  ActivityIndicator,
   StyleSheet,
   RefreshControl
 } from "react-native";
@@ -13,9 +12,16 @@ import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { call } from "@/api/client";
+import { CarLoader } from "@/components/CarLoader";
 import { colors, radii, spacing } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 import { fmtDate, fmtTime } from "@/utils/dateUtils";
+
+// Minimum time the search loader stays visible.  The animated loader
+// loops every 4 s; clamping the display time guarantees the user always
+// sees at least one full cycle even when the search API answers in
+// <100 ms (cached / nearby city pair).
+const MIN_LOADER_MS = 4000;
 
 type Route = RouteProp<RootStackParamList, "SearchResults">;
 type Nav = NativeStackNavigationProp<RootStackParamList, "SearchResults">;
@@ -73,9 +79,14 @@ export function SearchResultsScreen() {
 
   useEffect(() => {
     setLoading(true);
-    fetchRides()
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false));
+    const minDelay = new Promise<void>((resolve) =>
+      setTimeout(resolve, MIN_LOADER_MS)
+    );
+    Promise.all([fetchRides().catch(() => setItems([])), minDelay]).finally(() =>
+      setLoading(false)
+    );
+    // fetchRides is recreated each render but reads only from route.params.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params]);
 
   async function onRefresh() {
@@ -89,9 +100,15 @@ export function SearchResultsScreen() {
 
   if (loading) {
     return (
-      <View style={[s.shell, { alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator color={colors.text} />
-      </View>
+      <SafeAreaView style={s.shell} edges={["top"]}>
+        <View style={s.headerWrap}>
+          <Text style={s.heading} numberOfLines={1}>{heading}</Text>
+          <Text style={s.headerSub}>
+            {(route.params?.seats ?? 1)} seat · {route.params?.date ? fmtDate(route.params.date) : "Any date"}
+          </Text>
+        </View>
+        <CarLoader label="Finding your ride…" />
+      </SafeAreaView>
     );
   }
 

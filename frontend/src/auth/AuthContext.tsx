@@ -69,10 +69,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             { mobile_no: mobile }
           );
           return { exists: !!res?.exists, socialProvider: res?.social_provider ?? null };
-        } catch {
-          // Treat lookup failures as "unknown new user" so the caller asks
-          // for a name; the actual signup will fail more loudly if needed.
-          return { exists: false };
+        } catch (e: any) {
+          // Only swallow the failure when the server actually replied
+          // (and just said "no such user").  If we couldn't reach the
+          // server at all (DNS failure, offline, TLS error, 5xx), surface
+          // the error — otherwise we'd misroute a returning user into the
+          // "create account" step and then fail loudly with the same
+          // network error a moment later.
+          const status = e?.response?.status;
+          if (status === 400 || status === 404) {
+            return { exists: false };
+          }
+          throw e;
         }
       },
       async signInWithPhone(mobile, fullName) {

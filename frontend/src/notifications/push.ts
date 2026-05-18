@@ -23,6 +23,8 @@ let _lastUser: string | null = null;
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: true
   })
@@ -76,6 +78,15 @@ async function ensureAndroidChannels(): Promise<void> {
 export async function getExpoPushToken(): Promise<string | null> {
   // Skip simulators / web — Expo push is device-only.
   if (!Device.isDevice) return null;
+
+  // Expo Go (SDK 53+) on Android no longer supports remote push tokens
+  // and logs a noisy warning when `getExpoPushTokenAsync` is called.
+  // Local notification handling + channels still work, so we keep the
+  // rest of this module alive — just skip the token round-trip when
+  // running inside Expo Go.  EAS development / preview / production
+  // builds report `executionEnvironment === "standalone"` and still
+  // register tokens normally.
+  if (Constants.executionEnvironment === "storeClient") return null;
 
   await ensureAndroidChannels();
 

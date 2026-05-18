@@ -19,17 +19,23 @@
       "androidMode": "default",
       "iosDisplayInForeground": true
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.rideshare.app",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to show pickup points and live driver position.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Drivers share their position with passengers during a trip.",
-        "UIBackgroundModes": ["location"],
+        "UIBackgroundModes": [
+          "location"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       },
-      "runtimeVersion": { "policy": "appVersion" }
+      "runtimeVersion": {
+        "policy": "appVersion"
+      }
     },
     "android": {
       "package": "com.rideshare.app",
@@ -76,12 +82,9 @@
       "apiBaseUrl": "https://ember.bigdcollections.com",
       "websocketUrl": "https://ember.bigdcollections.com",
       "eas": {
-        "projectId": "51ee141a-eef9-479f-847d-0c2d0736ab1c"
+        "projectId": "898ee3e3-4960-423e-9398-7db662e4e4b6"
       }
     },
-    "owner": "ganureddy",
-    "updates": {
-      "url": "https://u.expo.dev/51ee141a-eef9-479f-847d-0c2d0736ab1c"
-    }
+    "owner": "ganureddylifes-organization"
   }
 }

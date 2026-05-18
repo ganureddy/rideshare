@@ -7,6 +7,10 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
+        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+      },
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
@@ -19,6 +23,10 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
+      "env": {
+        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
+        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+      },
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -36,6 +44,10 @@
     },
     "production": {
       "channel": "production",
+      "env": {
+        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
+        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+      },
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "medium"

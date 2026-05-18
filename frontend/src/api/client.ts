@@ -39,6 +39,13 @@ function build(): AxiosInstance {
         } catch {/* ignore */}
       } else if (data?.message) {
         message = data.message;
+      } else if (!err.response) {
+        // The request never reached the server — DNS failure, wrong URL
+        // baked into the build, no internet, TLS handshake error, etc.
+        // Include the URL we tried so the user can see at a glance
+        // whether they're hitting the right backend.
+        const target = err?.config?.baseURL || ENV.apiBaseUrl;
+        message = `Couldn't reach the server (${target}). Check your internet connection.`;
       }
       return Promise.reject(Object.assign(err, { message }));
     }

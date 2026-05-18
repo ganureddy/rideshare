@@ -161,6 +161,8 @@ export function RideDetailScreen() {
 
   useEffect(() => {
     load();
+    // `load` is a stable closure over params.rideId; tracking the id alone is enough.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.rideId]);
 
   // Booker / driver location auto-fetch.  Both flows benefit:

@@ -2,6 +2,7 @@ import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/auth/AuthContext";
 import type { City } from "@/components/CityPicker";
 import { LoginScreen } from "@/screens/Login";
@@ -49,19 +50,34 @@ const ICONS: Record<string, { active: keyof typeof Ionicons.glyphMap; inactive: 
 };
 
 function Tabs() {
+  // Phones with gesture navigation have a non-zero bottom safe-area inset.
+  // Without padding for it the tab bar slides under the home indicator and
+  // the labels become unreadable / un-tappable — which is exactly what made
+  // the menu look invisible after the first build.  We grow the bar by the
+  // inset so the icons + labels always sit comfortably above the system bar.
+  const insets = useSafeAreaInsets();
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         tabBarActiveTintColor: colors.text,
         tabBarInactiveTintColor: colors.mute,
         tabBarShowLabel: true,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: "600", marginBottom: 4 },
+        tabBarHideOnKeyboard: true,
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: "700",
+          letterSpacing: -0.1,
+          marginBottom: 4
+        },
+        tabBarItemStyle: { paddingTop: 4 },
         tabBarStyle: {
           backgroundColor: colors.card,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          height: 60,
-          paddingTop: 6
+          height: 64 + insets.bottom,
+          paddingTop: 8,
+          paddingBottom: 8 + insets.bottom
         },
         headerShown: false,
         tabBarIcon: ({ focused, color, size }) => {
@@ -70,18 +86,22 @@ function Tabs() {
           return (
             <Ionicons
               name={focused ? set.active : set.inactive}
-              size={size ?? 22}
+              size={size ?? 24}
               color={color}
             />
           );
         }
       })}
     >
-      <Tab.Screen name="Search" component={SearchScreen} options={{ title: "Find" }} />
-      <Tab.Screen name="Publish" component={PublishScreen} options={{ title: "Offer" }} />
+      <Tab.Screen name="Search" component={SearchScreen} options={{ title: "Search" }} />
+      <Tab.Screen
+        name="Publish"
+        component={PublishScreen}
+        options={{ title: "Publish Ride", tabBarLabelStyle: { fontSize: 10, fontWeight: "700" } }}
+      />
       <Tab.Screen name="Trips" component={TripsScreen} options={{ title: "Trips" }} />
       <Tab.Screen name="Chats" component={ChatListScreen} options={{ title: "Chats" }} />
-      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: "You" }} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: "Profile" }} />
     </Tab.Navigator>
   );
 }
