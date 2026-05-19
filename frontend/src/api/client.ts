@@ -31,23 +31,64 @@ function build(): AxiosInstance {
     (err) => {
       // Frappe wraps errors as { exc_type, exception, message, _server_messages }.
       const data = err?.response?.data;
+      const status = err?.response?.status;
+      const method = (err?.config?.url || "").replace("/api/method/", "");
       let message = err.message;
+
       if (data?._server_messages) {
         try {
           const msgs = JSON.parse(data._server_messages);
-          message = JSON.parse(msgs[0]).message || message;
+          const first = JSON.parse(msgs[0]);
+          message = first.message || message;
         } catch {/* ignore */}
-      } else if (data?.message) {
+      } else if (data?.exception) {
+        // e.g. "frappe.exceptions.PermissionError: Login required."
+        const m = String(data.exception);
+        const colon = m.indexOf(":");
+        message = colon >= 0 ? m.slice(colon + 1).trim() : m;
+      } else if (data?.exc) {
+        // Sometimes Frappe returns the traceback under .exc — grab the
+        // last non-empty line so the user sees something actionable.
+        try {
+          const lines = String(data.exc)
+            .split("\n")
+            .map((l: string) => l.trim())
+            .filter(Boolean);
+          if (lines.length) message = lines[lines.length - 1];
+        } catch {/* ignore */}
+      } else if (data?.message && typeof data.message === "string") {
         message = data.message;
       } else if (!err.response) {
         // The request never reached the server — DNS failure, wrong URL
         // baked into the build, no internet, TLS handshake error, etc.
-        // Include the URL we tried so the user can see at a glance
-        // whether they're hitting the right backend.
         const target = err?.config?.baseURL || ENV.apiBaseUrl;
         message = `Couldn't reach the server (${target}). Check your internet connection.`;
       }
-      return Promise.reject(Object.assign(err, { message }));
+
+      // Make Frappe's most common opaque errors actionable.
+      if (typeof message === "string") {
+        const verbatim = message.trim();
+        if (
+          /^invalid request$/i.test(verbatim) ||
+          (status === 417 && /invalid request/i.test(verbatim))
+        ) {
+          message = method
+            ? `Server rejected the request (${method}). The endpoint may be missing or the server out of date.`
+            : "Server rejected the request. The endpoint may be missing or the server out of date.";
+        } else if (status === 403) {
+          if (/login required|csrf/i.test(verbatim)) {
+            message = "You're signed out — please log in again.";
+          }
+        } else if (status === 404) {
+          message = method
+            ? `Server endpoint not found (${method}).`
+            : "Server endpoint not found.";
+        } else if (status === 500 && (!verbatim || /^request failed/i.test(verbatim))) {
+          message = `Server error while running ${method || "this request"}. Try again in a moment.`;
+        }
+      }
+
+      return Promise.reject(Object.assign(err, { message, status, method }));
     }
   );
   return c;

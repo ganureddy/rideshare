@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/auth/AuthContext";
 import { call } from "@/api/client";
 import { absoluteFileUrl, pickAndUploadImage } from "@/utils/upload";
@@ -91,17 +91,23 @@ export function EditProfileScreen() {
   }
 
   async function save() {
-    if (!fullName.trim()) {
+    const trimmedName = fullName.trim();
+    if (!trimmedName) {
       Alert.alert("Add a name", "Your name helps drivers and riders recognise you.");
       return;
     }
     setBusy(true);
     try {
-      await call("rideshare.api.auth.update_profile", {
-        full_name: fullName.trim(),
-        bio: isDriver ? bio.trim() : null,
-        user_image: photoUrl ?? ""
-      });
+      // Build a tight payload — only send fields that actually changed,
+      // and never send null/undefined.  `call()` strips nulls but bio
+      // belongs to the driver flow only.
+      const payload: Record<string, string> = { full_name: trimmedName };
+      if (isDriver) payload.bio = bio.trim();
+      // user_image: pass the value (string or empty) so the backend can
+      // clear it on the way through.  Empty string is valid here.
+      payload.user_image = photoUrl || "";
+
+      await call("rideshare.api.auth.update_profile", payload);
       await refreshProfile();
       Alert.alert("Saved", "Your profile has been updated.");
       nav.goBack();

@@ -22,7 +22,6 @@
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview",
       "env": {
         "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
         "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
@@ -43,7 +42,6 @@
       }
     },
     "production": {
-      "channel": "production",
       "env": {
         "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
         "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"

@@ -104,6 +104,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await credentialsStore.set(next);
         setCreds(next);
         setProfile(res.profile);
+        // Returning user?  Pull the full profile (rating, total trips,
+        // verification metadata, etc.) in the background so the Profile
+        // / Trips screens render real data the moment they mount instead
+        // of needing a manual pull-to-refresh.
+        if (!res.is_new) {
+          call<Profile>("rideshare.api.auth.whoami")
+            .then((p) => setProfile(p))
+            .catch(() => {/* whoami is best-effort; login response is the source of truth */});
+        }
         return { isNew: res.is_new };
       },
       async signInWithGoogle() {

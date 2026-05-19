@@ -1,7 +1,7 @@
 import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/auth/AuthContext";
 import type { City } from "@/components/CityPicker";
@@ -20,6 +20,8 @@ import { MyLocationScreen } from "@/screens/MyLocation";
 import { EditProfileScreen } from "@/screens/EditProfile";
 import { colors } from "@/theme";
 
+export type RideSort = "departure" | "price_asc" | "price_desc" | "duration";
+
 export type RootStackParamList = {
   Login: undefined;
   Tabs: undefined;
@@ -29,6 +31,13 @@ export type RootStackParamList = {
     /** YYYY-MM-DD; when omitted, the backend lists all upcoming dates. */
     date?: string;
     seats?: number;
+    sort?: RideSort;
+    /** 1 to limit to instant-bookable rides. */
+    instantOnly?: number;
+    /** 1 to limit to women-only rides. */
+    womenOnly?: number;
+    /** Inclusive upper bound on price_per_seat. */
+    maxPrice?: number;
   };
   RideDetail: { rideId: string };
   RideBookings: { rideId: string };

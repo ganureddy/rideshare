@@ -27,7 +27,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { subscribeToBookings, BookingEvent } from "@/realtime/socket";
 import { colors, radii, spacing, shadow } from "@/theme";

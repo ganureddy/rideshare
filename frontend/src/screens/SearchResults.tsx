@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { CarLoader } from "@/components/CarLoader";
 import { colors, radii, spacing } from "@/theme";
@@ -70,8 +70,11 @@ export function SearchResultsScreen() {
         destination: destination?.id,
         date: route.params?.date,
         seats: route.params?.seats ?? 1,
-        sort: "departure",
-        limit: 30
+        sort: route.params?.sort || "departure",
+        instant_booking: route.params?.instantOnly || 0,
+        women_only: route.params?.womenOnly || 0,
+        max_price: route.params?.maxPrice ?? undefined,
+        limit: 50
       }
     );
     setItems((res as any).rides || (res as any).results || []);

@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
@@ -81,17 +81,44 @@ export function TripsScreen() {
     }
   }, [route.params?.startTab]);
 
+  const [err, setErr] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setRefreshing(true);
+    setErr(null);
     try {
-      const [d, h] = await Promise.all([
-        call<Dashboard>("rideshare.api.mobile.home_dashboard"),
-        call<History>("rideshare.api.mobile.trip_history", { limit: 50 }).catch(
-          () => ({ past_bookings: [], past_rides: [] }) as History
-        )
-      ]);
-      setData(d);
-      setHistory(h);
+      // Fetch both in parallel.  We tolerate trip_history failing on
+      // older backends (returns the empty default), but home_dashboard
+      // failing is shown loudly so the user understands why nothing
+      // appears.
+      const dashboardPromise = call<Dashboard>("rideshare.api.mobile.home_dashboard");
+      const historyPromise = call<History>(
+        "rideshare.api.mobile.trip_history",
+        { limit: 50 }
+      ).catch(() => ({ past_bookings: [], past_rides: [] }) as History);
+
+      const [d, h] = await Promise.all([dashboardPromise, historyPromise]);
+      setData(
+        d || {
+          upcoming_bookings: [],
+          upcoming_rides: [],
+          active_trip_as_passenger: null,
+          active_trip_as_driver: null
+        }
+      );
+      setHistory(h || { past_bookings: [], past_rides: [] });
+    } catch (e: any) {
+      setErr(e?.message ?? "Couldn't load your trips. Pull to refresh.");
+      setData(
+        (prev) =>
+          prev || {
+            upcoming_bookings: [],
+            upcoming_rides: [],
+            active_trip_as_passenger: null,
+            active_trip_as_driver: null
+          }
+      );
+      setHistory((prev) => prev || { past_bookings: [], past_rides: [] });
     } finally {
       setRefreshing(false);
     }
@@ -112,6 +139,13 @@ export function TripsScreen() {
             <Text style={s.sub}>
               Bookings and rides linked to your number — they stay with you across reinstalls.
             </Text>
+
+            {err ? (
+              <View style={s.errCard}>
+                <Ionicons name="warning-outline" size={16} color={colors.warn} />
+                <Text style={s.errText} numberOfLines={3}>{err}</Text>
+              </View>
+            ) : null}
 
             <View style={s.tabRow}>
               <TabButton
@@ -473,5 +507,18 @@ const s = StyleSheet.create({
     borderColor: colors.border
   },
   tabBtnText: { color: colors.soft, fontSize: 13, fontWeight: "700" },
-  tabBtnTextActive: { color: colors.text }
+  tabBtnTextActive: { color: colors.text },
+
+  errCard: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
+    padding: spacing(3),
+    backgroundColor: "#FDECEA",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: "#F8C8C2",
+    marginBottom: spacing(3)
+  },
+  errText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 }
 });

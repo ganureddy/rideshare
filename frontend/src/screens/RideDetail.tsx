@@ -17,7 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import MapView, { Marker, Polyline, UrlTile, PROVIDER_DEFAULT } from "react-native-maps";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { subscribeToRide, subscribeToBookings } from "@/realtime/socket";
 import { locateAndResolve, ResolvedLocation } from "@/utils/location";
@@ -284,42 +284,62 @@ export function RideDetailScreen() {
 
   async function book() {
     if (!summary) return;
+    if (busy) return;
     setBusy(true);
     try {
       const order = await call<{
-        booking: string;
-        amount: number;
-        currency: string;
-        gateway: string;
-        order_id: string;
-        is_demo: boolean;
+        booking?: string;
+        amount?: number;
+        currency?: string;
+        gateway?: string;
+        order_id?: string;
+        is_demo?: boolean;
         key_id?: string;
       }>("rideshare.api.bookings.create_booking", {
         ride: params.rideId,
         seats: 1
       });
 
+      if (!order || !order.booking) {
+        Alert.alert(
+          "Booking failed",
+          "The server didn't return a booking reference. Try again in a moment."
+        );
+        return;
+      }
+
       // DEMO mode: backend gateway auto-confirms; just call confirm_payment.
       // For Razorpay, replace this block with the Razorpay checkout SDK
       // (react-native-razorpay) and pass the returned signature back.
       if (order.is_demo) {
-        await call("rideshare.api.bookings.confirm_payment", {
-          booking: order.booking,
-          gateway_order_id: order.order_id,
-          gateway_payment_id: `demo_${Date.now()}`,
-          gateway_signature: "demo"
-        });
+        try {
+          await call("rideshare.api.bookings.confirm_payment", {
+            booking: order.booking,
+            gateway_order_id: order.order_id,
+            gateway_payment_id: `demo_${Date.now()}`,
+            gateway_signature: "demo"
+          });
+        } catch (confirmErr: any) {
+          Alert.alert(
+            "Payment confirmation failed",
+            confirmErr?.message ?? "Your booking was created but payment couldn't be confirmed."
+          );
+          // Don't crash — try to reload the screen so the user sees the
+          // booking row in its actual state.
+          try { await load(); } catch {/* ignore */}
+          return;
+        }
       } else {
         Alert.alert(
           "Payment required",
-          "This server isn't in DEMO mode. Razorpay checkout integration goes here."
+          "This server isn't in DEMO mode. Open Razorpay to complete payment."
         );
         return;
       }
 
       Alert.alert("Booked!", "We'll alert you when the driver confirms.");
       // Refresh the screen so the chat / tracking buttons appear.
-      await load();
+      try { await load(); } catch {/* ignore */}
     } catch (e: any) {
       Alert.alert("Booking failed", e?.message ?? "Try again.");
     } finally {

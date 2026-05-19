@@ -44,7 +44,7 @@ import MapView, {
 } from "react-native-maps";
 import * as Location from "expo-location";
 import { useRoute, RouteProp, useNavigation } from "@react-navigation/native";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import {
   subscribeToRide,

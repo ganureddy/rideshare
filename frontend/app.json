@@ -27,10 +27,6 @@
       "bundleIdentifier": "com.rideshare.app",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to show pickup points and live driver position.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Drivers share their position with passengers during a trip.",
-        "UIBackgroundModes": [
-          "location"
-        ],
         "ITSAppUsesNonExemptEncryption": false
       },
       "runtimeVersion": {
@@ -46,10 +42,7 @@
       },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_BACKGROUND_LOCATION",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION"
       ],
       "runtimeVersion": "1.0.0"
     },
@@ -58,8 +51,8 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "Allow Rideshare to use your location for live trip tracking.",
-          "isIosBackgroundLocationEnabled": true,
-          "isAndroidBackgroundLocationEnabled": true
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
         }
       ],
       [
@@ -76,15 +69,28 @@
           "photosPermission": "Rideshare uses photos to attach your driver portrait and car pictures to a ride.",
           "cameraPermission": "Rideshare uses your camera to capture your driver portrait and car pictures."
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "buildArchs": [
+              "arm64-v8a",
+              "armeabi-v7a"
+            ]
+          }
+        }
       ]
     ],
     "extra": {
       "apiBaseUrl": "https://ember.bigdcollections.com",
       "websocketUrl": "https://ember.bigdcollections.com",
       "eas": {
-        "projectId": "898ee3e3-4960-423e-9398-7db662e4e4b6"
+        "projectId": "88cc1bb3-e526-4bbb-927c-364665767bbf"
       }
     },
-    "owner": "ganureddylifes-organization"
+    "owner": "erpnext"
   }
 }

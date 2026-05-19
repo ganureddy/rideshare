@@ -487,9 +487,14 @@ def login_with_phone(mobile_no: str, full_name: str | None = None) -> dict:
 	roles = frappe.get_roles(user_id)
 	driver_profile = frappe.db.get_value(
 		"Driver Profile", {"user": user_id},
-		["name", "is_verified", "verification_status"], as_dict=True
+		["name", "is_verified", "verification_status", "bio"], as_dict=True
 	)
 
+	# Return the full profile shape that ``whoami`` would — that way a
+	# returning user's screens (Profile, EditProfile, Tracking header)
+	# can paint their stored name + portrait + phone on the very first
+	# frame after login, instead of flashing placeholders for one
+	# `whoami` round-trip.
 	return {
 		"user": user_id,
 		"mobile_no": mobile,
@@ -499,6 +504,10 @@ def login_with_phone(mobile_no: str, full_name: str | None = None) -> dict:
 		"profile": {
 			"full_name": user_doc.full_name,
 			"first_name": user_doc.first_name,
+			"last_name": user_doc.last_name,
+			"email": user_doc.email,
+			"mobile_no": user_doc.mobile_no or mobile,
+			"user_image": user_doc.user_image,
 			"roles": roles,
 			"is_driver": "Driver" in roles or "Verified Driver" in roles,
 			"is_verified_driver": "Verified Driver" in roles,

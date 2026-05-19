@@ -69,12 +69,22 @@ class ChatMessage(Document):
 		thread.save(ignore_permissions=True)
 
 	def _broadcast(self) -> None:
-		"""Push the new message onto the realtime room for this thread."""
+		"""Push the new message onto the realtime room for this thread.
 
+		Includes ``sender_name`` (the User's ``full_name``) so the mobile
+		WebView and the rider/driver dashboards can render the real
+		person's name above the bubble — instead of leaving it blank /
+		falling back to a generic role label after a realtime update.
+		"""
+
+		sender_name = (
+			frappe.db.get_value("User", self.sender, "full_name") or self.sender
+		)
 		payload = {
 			"name": self.name,
 			"thread": self.thread,
 			"sender": self.sender,
+			"sender_name": sender_name,
 			"sender_role": self.sender_role,
 			"body": self.body,
 			"sent_at": self.sent_at.isoformat() if self.sent_at else None,

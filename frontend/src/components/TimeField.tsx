@@ -15,7 +15,7 @@ import {
   Pressable
 } from "react-native";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { colors, radii } from "@/theme";
 
 type Props = {
