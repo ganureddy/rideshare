@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -28,13 +28,34 @@ export function ProfileScreen() {
   const nav = useNavigation<Nav>();
   const { user, mobileNo, profile, signOut } = useAuth();
   const [opening, setOpening] = useState(false);
+  const [co2, setCo2] = useState<{ kg: number; trees: number } | null>(null);
 
-  const initials = (profile?.full_name || profile?.first_name || "U")
-    .split(" ")
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  useEffect(() => {
+    let cancelled = false;
+    call<{ co2_saved_kg: number; trees_equivalent: number }>(
+      "rideshare.api.co2.my_co2"
+    )
+      .then((r) => {
+        if (cancelled) return;
+        setCo2({
+          kg: Number(r?.co2_saved_kg) || 0,
+          trees: Number(r?.trees_equivalent) || 0
+        });
+      })
+      .catch(() => {/* silent — widget hides when null */});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const initials =
+    (profile?.full_name || profile?.first_name || "U")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((p) => p[0] || "")
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "U";
 
   const isDriver = !!(profile?.is_driver || profile?.is_verified_driver);
   const verified = profile?.driver_profile?.is_verified;
@@ -115,6 +136,20 @@ export function ProfileScreen() {
             </View>
           )}
         </View>
+
+        {co2 && co2.kg > 0 ? (
+          <View style={[s.co2Card, shadow.card]}>
+            <View style={s.co2Icon}>
+              <Ionicons name="leaf" size={20} color={colors.primaryText} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.co2Title}>You saved {co2.kg.toFixed(1)} kg CO₂</Text>
+              <Text style={s.co2Sub}>
+                Equivalent to {co2.trees} {co2.trees === 1 ? "tree" : "trees"} absorbing for a year. Every shared ride helps. 🌿
+              </Text>
+            </View>
+          </View>
+        ) : null}
 
         <View style={[s.card, shadow.card, { marginTop: spacing(3), padding: 0 }]}>
           <Row icon="person-outline" label="Edit profile" onPress={openEditProfile} />
@@ -287,6 +322,28 @@ const s = StyleSheet.create({
   },
   logoutText: { color: colors.danger, fontSize: 15, fontWeight: "700" },
   version: { textAlign: "center", color: colors.mute, fontSize: 11, marginTop: spacing(4) },
+
+  co2Card: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: spacing(3),
+    backgroundColor: "#E8F5E9",
+    borderRadius: radii.lg,
+    padding: spacing(4),
+    borderWidth: 1,
+    borderColor: "#A5D6A7"
+  },
+  co2Icon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.success,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  co2Title: { fontSize: 15, fontWeight: "800", color: "#1B5E20", letterSpacing: -0.2 },
+  co2Sub: { fontSize: 12, color: "#2E7D32", marginTop: 4, lineHeight: 17 },
 
   helpCard: {
     flexDirection: "row",

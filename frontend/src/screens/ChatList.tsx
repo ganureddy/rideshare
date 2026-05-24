@@ -101,12 +101,13 @@ export function ChatListScreen() {
                   <Ionicons name="help-buoy" size={20} color={colors.primaryText} />
                 ) : (
                   <Text style={s.avatarText}>
-                    {(item.counterparty.label || "?")
-                      .split(" ")
-                      .map((p) => p[0])
+                    {(item.counterparty?.label || "?")
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .map((p) => p[0] || "")
                       .slice(0, 2)
                       .join("")
-                      .toUpperCase()}
+                      .toUpperCase() || "?"}
                   </Text>
                 )}
               </View>
@@ -115,7 +116,7 @@ export function ChatListScreen() {
                   <Text style={s.title} numberOfLines={1}>
                     {item.thread_type === "Support"
                       ? "Rideshare Support"
-                      : item.counterparty.label}
+                      : (item.counterparty?.label || "Conversation")}
                   </Text>
                   {item.last_message_at ? (
                     <Text style={s.time}>{fmtDateTime(item.last_message_at)}</Text>

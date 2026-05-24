@@ -26,23 +26,33 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-  Linking
+  Linking,
+  AppState,
+  AppStateStatus
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp, useFocusEffect } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
+import { absoluteFileUrl } from "@/utils/upload";
 import {
   subscribeToThread,
   subscribeToTyping,
+  subscribeToMessageStatus,
+  subscribeToPresence,
   ChatMessageEvent,
-  TypingEvent
+  TypingEvent,
+  ChatStatusEvent,
+  PresenceEvent
 } from "@/realtime/socket";
 import { colors, radii, spacing, shadow } from "@/theme";
+import { Image } from "react-native";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
 type Route = RouteProp<RootStackParamList, "ChatThread">;
+
+export type DeliveryStatus = "sent" | "delivered" | "read";
 
 type ServerMessage = {
   name: string;
@@ -52,6 +62,10 @@ type ServerMessage = {
   body: string;
   sent_at?: string | null;
   is_system?: boolean | number;
+  message_type?: "text" | "image" | "audio" | "file" | "location" | "system" | string;
+  attachment?: string | null;
+  attachment_meta?: Record<string, unknown> | null;
+  delivery_status?: DeliveryStatus;
 };
 
 type ThreadHead = {
@@ -59,6 +73,14 @@ type ThreadHead = {
   subtitle: string;
   phone?: string | null;
   myRole?: string;
+  /** The other person's user id — used by presence subscription. */
+  otherUser?: string | null;
+};
+
+type Presence = {
+  active: boolean;
+  /** ISO timestamp of last activity (live or persisted). */
+  lastSeen: string | null;
 };
 
 const TYPING_THROTTLE_MS = 2500;
@@ -83,11 +105,17 @@ export function ChatThreadScreen() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
+  const [presence, setPresence] = useState<Presence>({ active: false, lastSeen: null });
 
   // -- Initial fetch + thread metadata ------------------------------------
   const loadAll = useCallback(async () => {
     setError(null);
     setLoading(true);
+    if (!params?.threadId) {
+      setError("This chat link is missing — open from the trip again.");
+      setLoading(false);
+      return;
+    }
     try {
       const res = await call<{
         thread: { name: string; thread_type: string; subject?: string; driver?: string; passenger?: string };
@@ -102,6 +130,15 @@ export function ChatThreadScreen() {
       let title = "Conversation";
       let subtitle = res.thread.subject || "Tap to message";
       let phone: string | null = null;
+      // For booking threads we know the other party; presence + read
+      // receipts use their user id.
+      const myRole = res.my_role;
+      const otherUser =
+        myRole === "Driver"
+          ? res.thread.passenger || null
+          : myRole === "Passenger"
+            ? res.thread.driver || null
+            : null;
       try {
         const list = await call<Array<{ name: string; counterparty?: { label?: string; phone?: string | null } }>>(
           "rideshare.api.chat.list_threads",
@@ -118,23 +155,93 @@ export function ChatThreadScreen() {
         }
       } catch {/* ignore — header just stays generic */}
 
-      setHead({ title, subtitle, phone, myRole: res.my_role });
-      setItems(res.messages || []);
+      setHead({ title, subtitle, phone, myRole, otherUser });
+      setItems(
+        Array.isArray(res.messages)
+          ? res.messages.filter((m) => m && typeof m.name === "string")
+          : []
+      );
+
+      // Bootstrap the counterparty's online state with one REST call;
+      // the realtime subscription below keeps it fresh after that.
+      if (otherUser) {
+        try {
+          const p = await call<Record<string, { active: boolean; last_seen: string | null }>>(
+            "rideshare.api.presence.get_presence",
+            { user_ids: otherUser }
+          );
+          const row = p?.[otherUser];
+          if (row) setPresence({ active: !!row.active, lastSeen: row.last_seen });
+        } catch {/* presence is best-effort */}
+      }
     } catch (e: any) {
       setError(e?.message ?? "Couldn't open chat.");
     } finally {
       setLoading(false);
     }
-  }, [params.threadId]);
+  }, [params?.threadId]);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
 
-  // Mark unread cleared when the screen gains focus.
+  // Promote read receipts when the screen gains focus.  The new
+  // mark_message_read endpoint promotes every unread message to
+  // "read" *and* clears the per-side unread counter — one round-trip,
+  // two effects.
+  //
+  // The same focus effect also drives presence: a 30 s heartbeat
+  // while the screen is foregrounded, paused while the user
+  // backgrounds the app (otherwise we leak both an interval and the
+  // false "online" signal to the counterparty).  We hook AppState
+  // to pause/resume the ping in lockstep with foreground/background.
   useFocusEffect(
     useCallback(() => {
-      call("rideshare.api.chat.mark_read", { thread: params.threadId }).catch(() => {});
+      let intervalId: ReturnType<typeof setInterval> | null = null;
+      let cancelled = false;
+
+      const pingNow = () => {
+        call("rideshare.api.presence.ping_presence").catch(() => {});
+      };
+      const startHeartbeat = () => {
+        if (intervalId || cancelled) return;
+        pingNow();
+        intervalId = setInterval(pingNow, 30_000);
+      };
+      const stopHeartbeat = () => {
+        if (intervalId) {
+          clearInterval(intervalId);
+          intervalId = null;
+        }
+      };
+
+      // Initial mark-read + presence kick.
+      call("rideshare.api.chat.mark_message_read", { thread: params.threadId }).catch(() => {});
+      startHeartbeat();
+
+      const onAppState = (next: AppStateStatus) => {
+        if (next === "active") {
+          startHeartbeat();
+          // Catch up missed messages on resume.
+          call("rideshare.api.chat.mark_message_read", { thread: params.threadId }).catch(() => {});
+        } else {
+          stopHeartbeat();
+          // Best-effort "I'm gone" so the counterparty's chat header
+          // flips to "Last seen just now" immediately.
+          call("rideshare.api.presence.go_offline").catch(() => {});
+        }
+      };
+      const sub = AppState.addEventListener("change", onAppState);
+
+      return () => {
+        cancelled = true;
+        stopHeartbeat();
+        try { sub.remove(); } catch {/* RN <0.65 returns void; ignore */}
+        // When the screen unfocuses (back navigation), tell the server
+        // we're offline so the typing indicator clears out and the
+        // counterparty's online dot flips off.
+        call("rideshare.api.presence.go_offline").catch(() => {});
+      };
     }, [params.threadId])
   );
 
@@ -142,35 +249,75 @@ export function ChatThreadScreen() {
   useEffect(() => {
     let unsubMsg: (() => void) | null = null;
     let unsubTyping: (() => void) | null = null;
+    let unsubStatus: (() => void) | null = null;
+    let unsubPresence: (() => void) | null = null;
     let cancelled = false;
 
     (async () => {
       try {
         unsubMsg = await subscribeToThread(params.threadId, (msg: ChatMessageEvent) => {
           if (cancelled) return;
+          if (!msg || typeof msg.name !== "string") return;
           setItems((cur) => {
             // Optimistic message names start with "__pending_"; reconcile
-            // when the real one arrives by body+sender.
-            const filtered = cur.filter(
-              (m) =>
-                !(
-                  m.name.startsWith("__pending_") &&
-                  m.sender === msg.sender &&
-                  m.body === msg.body
-                )
-            );
+            // when the real one arrives by body+sender.  Defensive
+            // type-checks: server messages have always carried a `name`,
+            // but a malformed payload shouldn't crash the screen.
+            const filtered = cur.filter((m) => {
+              if (typeof m?.name !== "string") return true;
+              return !(
+                m.name.startsWith("__pending_") &&
+                m.sender === msg.sender &&
+                m.body === msg.body
+              );
+            });
             if (filtered.some((m) => m.name === msg.name)) return filtered;
             return [...filtered, normaliseEvent(msg)];
           });
-          // Clear server-side unread for the receiver in near real-time.
-          call("rideshare.api.chat.mark_read", { thread: params.threadId }).catch(() => {});
+          // Promote messages we just received to read on the server.
+          call("rideshare.api.chat.mark_message_read", { thread: params.threadId }).catch(() => {});
         });
       } catch {/* socket optional */}
+
       try {
         unsubTyping = await subscribeToTyping(params.threadId, (evt: TypingEvent) => {
           if (cancelled) return;
           if (evt.sender === user) return;
           setTyping(!!evt.is_typing);
+        });
+      } catch {/* socket optional */}
+
+      try {
+        unsubStatus = await subscribeToMessageStatus(
+          params.threadId,
+          (evt: ChatStatusEvent) => {
+            if (cancelled) return;
+            const ids = new Set(evt.messages || []);
+            if (ids.size === 0) return;
+            setItems((cur) =>
+              cur.map((m) =>
+                ids.has(m.name)
+                  ? { ...m, delivery_status: evt.status }
+                  : m
+              )
+            );
+          }
+        );
+      } catch {/* socket optional */}
+    })();
+
+    // Presence subscription — only meaningful for booking threads
+    // where we know the other party.
+    (async () => {
+      try {
+        unsubPresence = await subscribeToPresence((evt: PresenceEvent) => {
+          if (cancelled) return;
+          // We don't know the other user yet on first subscribe; the
+          // condition is re-checked against the latest head.otherUser
+          // through state, but presence handlers can't read state.
+          // We filter at handler time instead.
+          if (head.otherUser && evt.user !== head.otherUser) return;
+          setPresence({ active: !!evt.active, lastSeen: evt.at || null });
         });
       } catch {/* socket optional */}
     })();
@@ -179,8 +326,10 @@ export function ChatThreadScreen() {
       cancelled = true;
       if (unsubMsg) unsubMsg();
       if (unsubTyping) unsubTyping();
+      if (unsubStatus) unsubStatus();
+      if (unsubPresence) unsubPresence();
     };
-  }, [params.threadId, user]);
+  }, [params.threadId, user, head.otherUser]);
 
   // -- Send ---------------------------------------------------------------
   async function send() {
@@ -194,7 +343,9 @@ export function ChatThreadScreen() {
       sender_name: "You",
       body,
       sent_at: new Date().toISOString(),
-      is_system: false
+      is_system: false,
+      message_type: "text",
+      delivery_status: "sent"
     };
     setItems((cur) => [...cur, optimistic]);
     setDraft("");
@@ -209,6 +360,39 @@ export function ChatThreadScreen() {
       // Roll the optimistic message back and put the draft back into the box.
       setItems((cur) => cur.filter((m) => m.name !== optimistic.name));
       setDraft(body);
+      Alert.alert("Couldn't send", e?.message ?? "Try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /** Inline-send for canned replies — same pipeline as `send()` but
+   *  takes the body directly so we don't have to round-trip through
+   *  React state. */
+  async function sendQuickReply(body: string) {
+    const trimmed = body.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    const optimistic: ServerMessage = {
+      name: `__pending_${Date.now()}`,
+      sender: user || "me",
+      sender_role: head.myRole as any,
+      sender_name: "You",
+      body: trimmed,
+      sent_at: new Date().toISOString(),
+      is_system: false,
+      message_type: "text",
+      delivery_status: "sent"
+    };
+    setItems((cur) => [...cur, optimistic]);
+    Promise.resolve().then(() => scrollToBottom());
+    try {
+      await call("rideshare.api.chat.send_message", {
+        thread: params.threadId,
+        body: trimmed
+      });
+    } catch (e: any) {
+      setItems((cur) => cur.filter((m) => m.name !== optimistic.name));
       Alert.alert("Couldn't send", e?.message ?? "Try again.");
     } finally {
       setSending(false);
@@ -276,11 +460,18 @@ export function ChatThreadScreen() {
         </TouchableOpacity>
         <View style={s.avatar}>
           <Text style={s.avatarText}>{initials}</Text>
+          {presence.active ? <View style={s.presenceDot} /> : null}
         </View>
         <View style={{ flex: 1 }}>
           <Text style={s.title} numberOfLines={1}>{head.title}</Text>
           <Text style={s.subtitle} numberOfLines={1}>
-            {typing ? `${head.title.split(" ")[0]} is typing…` : head.subtitle}
+            {typing
+              ? `${head.title.split(" ")[0] || head.title} is typing…`
+              : presence.active
+                ? "Online"
+                : presence.lastSeen
+                  ? `Last seen ${fmtRelative(presence.lastSeen)}`
+                  : head.subtitle}
           </Text>
         </View>
         {head.phone ? (
@@ -340,6 +531,25 @@ export function ChatThreadScreen() {
             keyboardShouldPersistTaps="handled"
           />
         )}
+
+        {/* Quick replies — one-tap canned messages.  These live above
+            the composer (NOT above the message list) so they stay
+            within thumb reach without occluding chat history. */}
+        <QuickReplies
+          role={head.myRole}
+          onPick={(text) => {
+            // Inline-send: skip the composer to keep the UX punchy.
+            // The text is short (< 60 chars) so we don't need a draft
+            // edit step.
+            if (sending) return;
+            setDraft(""); // clear any in-progress draft
+            // Reuse the existing send pipeline by stuffing draft and
+            // calling send().  Setting state and immediately calling
+            // send() races, so we inline a tiny copy of the send
+            // logic here.
+            sendQuickReply(text);
+          }}
+        />
 
         {/* Composer */}
         <View style={s.composer}>
@@ -405,6 +615,39 @@ function fmtClock(iso?: string | null): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+/** "5 minutes ago" / "yesterday" — used for last-seen and message ticks. */
+function fmtRelative(iso?: string | null): string {
+  if (!iso) return "recently";
+  const d = new Date(iso.replace(" ", "T"));
+  if (isNaN(d.getTime())) return "recently";
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (sec < 30) return "just now";
+  if (sec < 90) return "1 minute ago";
+  if (sec < 3600) return `${Math.round(sec / 60)} minutes ago`;
+  if (sec < 7200) return "1 hour ago";
+  if (sec < 86400) return `${Math.round(sec / 3600)} hours ago`;
+  if (sec < 172800) return "yesterday";
+  return `${Math.round(sec / 86400)} days ago`;
+}
+
+/** WhatsApp-style ticks for own messages. */
+function DeliveryTicks({ status }: { status?: DeliveryStatus }) {
+  if (!status) return null;
+  // sent     → single ✓ (white/translucent on dark bubble)
+  // delivered → ✓✓
+  // read     → ✓✓ in blue
+  const tick = status === "sent" ? "checkmark" : "checkmark-done";
+  const colour = status === "read" ? "#5AB1FF" : "rgba(255,255,255,0.78)";
+  return (
+    <Ionicons
+      name={tick}
+      size={13}
+      color={colour}
+      style={{ marginLeft: 4 }}
+    />
+  );
+}
+
 function MessageBubble({
   msg,
   mine,
@@ -429,6 +672,15 @@ function MessageBubble({
     !!(msg.sender_name && msg.sender_name !== msg.sender);
   const tightTop = !showName && prev && prev.sender === msg.sender && !prev.is_system;
   const tightBottom = next && next.sender === msg.sender && !next.is_system;
+
+  // Resolve attachment URL once per render so we can fall back if the
+  // server sent a relative path.
+  const attachmentUri =
+    msg.attachment ? absoluteFileUrl(msg.attachment) ?? msg.attachment : null;
+  const isImage = msg.message_type === "image" && !!attachmentUri;
+  const isAudio = msg.message_type === "audio" && !!attachmentUri;
+  const isFile = msg.message_type === "file" && !!attachmentUri;
+
   return (
     <View
       style={[
@@ -441,6 +693,7 @@ function MessageBubble({
         style={[
           s.bubble,
           mine ? s.bubbleMine : s.bubbleOther,
+          isImage && s.bubbleImage,
           mine && tightBottom && { borderBottomRightRadius: 6 },
           !mine && tightBottom && { borderBottomLeftRadius: 6 }
         ]}
@@ -448,8 +701,105 @@ function MessageBubble({
         {showName ? (
           <Text style={s.bubbleSender}>{msg.sender_name}</Text>
         ) : null}
-        <Text style={mine ? s.bubbleTextMine : s.bubbleTextOther}>{msg.body}</Text>
-        <Text style={mine ? s.bubbleTimeMine : s.bubbleTimeOther}>{fmtClock(msg.sent_at)}</Text>
+
+        {isImage ? (
+          <View style={s.imageWrap}>
+            <Image
+              source={{ uri: attachmentUri as string }}
+              style={s.imageThumb}
+              resizeMode="cover"
+            />
+            {msg.body ? (
+              <Text style={[mine ? s.bubbleTextMine : s.bubbleTextOther, { marginTop: 6 }]}>
+                {msg.body}
+              </Text>
+            ) : null}
+          </View>
+        ) : isAudio ? (
+          <View style={s.audioRow}>
+            <Ionicons
+              name="play-circle"
+              size={28}
+              color={mine ? colors.primaryText : colors.text}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={mine ? s.bubbleTextMine : s.bubbleTextOther}>
+                Voice message
+                {(msg.attachment_meta as any)?.duration_seconds
+                  ? ` · ${Math.round(((msg.attachment_meta as any).duration_seconds))}s`
+                  : ""}
+              </Text>
+              {msg.body ? (
+                <Text style={mine ? s.bubbleTimeMine : s.bubbleTimeOther}>{msg.body}</Text>
+              ) : null}
+            </View>
+          </View>
+        ) : isFile ? (
+          <View style={s.audioRow}>
+            <Ionicons
+              name="document-attach"
+              size={22}
+              color={mine ? colors.primaryText : colors.text}
+            />
+            <Text style={mine ? s.bubbleTextMine : s.bubbleTextOther} numberOfLines={1}>
+              {(msg.attachment_meta as any)?.filename || msg.body || "Attachment"}
+            </Text>
+          </View>
+        ) : (
+          <Text style={mine ? s.bubbleTextMine : s.bubbleTextOther}>{msg.body}</Text>
+        )}
+
+        <View style={s.bubbleFooter}>
+          <Text style={mine ? s.bubbleTimeMine : s.bubbleTimeOther}>{fmtClock(msg.sent_at)}</Text>
+          {mine ? <DeliveryTicks status={msg.delivery_status} /> : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** Canned replies are role-specific — drivers and passengers use
+ *  different turns of phrase.  Tap a chip → instant send (no edit
+ *  step), keeping the chat snappy. */
+const QUICK_REPLIES_PASSENGER = [
+  "On my way 👍",
+  "Reached pickup",
+  "Running 5 min late",
+  "Where are you?",
+  "Thanks!",
+  "👍"
+];
+const QUICK_REPLIES_DRIVER = [
+  "I'm at the pickup spot",
+  "5 min away",
+  "Stuck in traffic",
+  "Please share your location",
+  "Reached destination",
+  "Thanks!"
+];
+
+function QuickReplies({
+  role,
+  onPick
+}: {
+  role?: string;
+  onPick: (text: string) => void;
+}) {
+  const items = role === "Driver" ? QUICK_REPLIES_DRIVER : QUICK_REPLIES_PASSENGER;
+  return (
+    <View style={s.quickRepliesWrap}>
+      <View style={s.quickRepliesScroll}>
+        {items.map((label) => (
+          <TouchableOpacity
+            key={label}
+            style={s.quickReply}
+            onPress={() => onPick(label)}
+            activeOpacity={0.85}
+            hitSlop={4}
+          >
+            <Text style={s.quickReplyText} numberOfLines={1}>{label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     </View>
   );
@@ -478,6 +828,17 @@ const s = StyleSheet.create({
     justifyContent: "center"
   },
   avatarText: { color: colors.primaryText, fontSize: 13, fontWeight: "800" },
+  presenceDot: {
+    position: "absolute",
+    bottom: -1,
+    right: -1,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: colors.success,
+    borderWidth: 2,
+    borderColor: colors.card
+  },
   callBtn: {
     width: 34,
     height: 34,
@@ -537,6 +898,26 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border
   },
+  bubbleImage: {
+    paddingVertical: 4,
+    paddingHorizontal: 4
+  },
+  imageWrap: {
+    overflow: "hidden",
+    borderRadius: 14
+  },
+  imageThumb: {
+    width: 220,
+    height: 220,
+    borderRadius: 14,
+    backgroundColor: colors.borderStrong
+  },
+  audioRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 2
+  },
   bubbleSender: {
     fontSize: 11,
     fontWeight: "700",
@@ -548,14 +929,18 @@ const s = StyleSheet.create({
   bubbleTimeMine: {
     color: "rgba(255,255,255,0.72)",
     fontSize: 10,
-    marginTop: 4,
     textAlign: "right"
   },
   bubbleTimeOther: {
     color: colors.soft,
     fontSize: 10,
-    marginTop: 4,
     textAlign: "right"
+  },
+  bubbleFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginTop: 4
   },
   systemWrap: { alignItems: "center", marginVertical: 6 },
   systemText: {
@@ -565,6 +950,33 @@ const s = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999
+  },
+
+  quickRepliesWrap: {
+    paddingHorizontal: spacing(3),
+    paddingTop: 6,
+    paddingBottom: 4,
+    backgroundColor: colors.card,
+    borderTopWidth: 1,
+    borderTopColor: colors.border
+  },
+  quickRepliesScroll: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6
+  },
+  quickReply: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: colors.bgAlt,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border
+  },
+  quickReplyText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.text
   },
 
   composer: {

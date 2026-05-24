@@ -149,6 +149,15 @@ def get_thread(thread: str, limit: int = 50, before: str | None = None) -> dict:
 
 	``before``: optional Chat Message ``name`` — when supplied, returns
 	messages older than that one (cursor pagination for infinite scroll).
+
+	Side effects:
+	  * Any message in the returned window addressed to the *caller*
+	    that's still flagged "sent" gets promoted to "delivered" and
+	    a ``rideshare:chat:status`` event fires so the *sender's* UI
+	    can flip ✓ → ✓✓.
+	  * The caller's per-thread unread counter is **not** cleared
+	    here — that's a separate, explicit ``mark_read`` call that
+	    fires when the thread actually becomes visible on screen.
 	"""
 
 	user = _user()
@@ -161,7 +170,9 @@ def get_thread(thread: str, limit: int = 50, before: str | None = None) -> dict:
 		values["before"] = before
 
 	messages = frappe.db.sql(
-		f"""SELECT name, sender, sender_role, body, sent_at, is_system, attachment
+		f"""SELECT name, sender, sender_role, body, sent_at, is_system,
+		           message_type, attachment, attachment_meta,
+		           delivery_status, delivered_at, read_at
 		    FROM `tabChat Message`
 		    WHERE {" AND ".join(conds)}
 		    ORDER BY sent_at DESC, name DESC
@@ -186,12 +197,176 @@ def get_thread(thread: str, limit: int = 50, before: str | None = None) -> dict:
 		meta = user_meta.get(m["sender"]) or {}
 		m["sender_name"] = meta.get("full_name") or m["sender"]
 		m["sender_image"] = meta.get("user_image")
+		# attachment_meta arrives as a JSON string; normalise to dict.
+		if m.get("attachment_meta") and isinstance(m["attachment_meta"], str):
+			try:
+				m["attachment_meta"] = frappe.parse_json(m["attachment_meta"])
+			except Exception:
+				m["attachment_meta"] = None
+
+	# Promote in-window messages addressed to the caller from sent →
+	# delivered.  Cheap (one bulk UPDATE) and lets the sender's ✓ ✓✓
+	# ticks update automatically the moment the recipient opens the
+	# screen.
+	_promote_to_delivered(thread, user, [m["name"] for m in messages])
 
 	return {
 		"thread": t,
 		"messages": messages,
 		"my_role": _my_role(t, user),
 	}
+
+
+def _promote_to_delivered(thread: str, viewer: str, message_names: list[str]) -> None:
+	"""Mark messages NOT sent by ``viewer`` as ``delivered`` (idempotent).
+
+	Broadcasts one ``rideshare:chat:status`` event with the affected
+	message ids so the sender's pane can flip the ticks live.
+	"""
+
+	if not message_names:
+		return
+	rows = frappe.db.sql(
+		"""SELECT name FROM `tabChat Message`
+		   WHERE thread = %(t)s
+		     AND name IN %(ids)s
+		     AND sender != %(u)s
+		     AND COALESCE(delivery_status, 'sent') = 'sent'""",
+		{"t": thread, "ids": tuple(message_names), "u": viewer},
+		as_dict=True,
+	)
+	if not rows:
+		return
+	ids = [r["name"] for r in rows]
+	frappe.db.sql(
+		"""UPDATE `tabChat Message`
+		   SET delivery_status = 'delivered',
+		       delivered_at = %(now)s
+		   WHERE name IN %(ids)s""",
+		{"now": now_datetime(), "ids": tuple(ids)},
+	)
+	frappe.db.commit()
+	frappe.publish_realtime(
+		event="rideshare:chat:status",
+		message={
+			"thread": thread,
+			"status": "delivered",
+			"messages": ids,
+			"by": viewer,
+			"at": now_datetime().isoformat(),
+		},
+		room=f"chat:{thread}",
+		after_commit=False,
+	)
+
+
+@frappe.whitelist()
+def mark_delivered(thread: str, message_ids: str | list[str] | None = None) -> dict:
+	"""Explicit "I have these messages on my device" ack.
+
+	Used by the mobile chat screen on socket reconnect — the WebView
+	or React Native app calls this with the ids of messages it has in
+	memory but hasn't yet acked.  Server-side it's the same path as
+	``get_thread``: bulk-promote any "sent" → "delivered" and broadcast
+	the change so the sender sees ✓✓.
+	"""
+
+	user = _user()
+	t = _authorize(thread, user)
+	# Defensive: ignore inputs that aren't strings.  Callers can pass
+	# either a JSON list or a comma-separated string.
+	if isinstance(message_ids, str):
+		try:
+			parsed = frappe.parse_json(message_ids)
+			ids = parsed if isinstance(parsed, list) else [s.strip() for s in message_ids.split(",")]
+		except Exception:
+			ids = [s.strip() for s in message_ids.split(",")]
+	else:
+		ids = list(message_ids or [])
+	ids = [i for i in ids if isinstance(i, str) and i]
+	if not ids:
+		return {"ok": True, "thread": t["name"], "promoted": 0}
+	before = len(ids)
+	_promote_to_delivered(t["name"], user, ids)
+	return {"ok": True, "thread": t["name"], "promoted": before}
+
+
+@frappe.whitelist()
+def mark_message_read(thread: str, up_to: str | None = None) -> dict:
+	"""Mark every message in the thread that the caller has *not yet*
+	read as ``read`` (✓✓ blue), up to and including ``up_to``.
+
+	When ``up_to`` is omitted, every unread message in the thread is
+	flipped — that's the "I just opened the conversation" case.
+
+	Also clears the caller's per-side unread counter on the thread
+	(same effect ``mark_read`` had previously) and broadcasts a single
+	``rideshare:chat:status`` event so the sender's UI sees ✓✓ blue.
+	"""
+
+	user = _user()
+	t = _authorize(thread, user)
+
+	# Build the WHERE: messages on this thread, sent by SOMEONE ELSE,
+	# whose lifecycle hasn't already reached "read", optionally bounded
+	# by sent_at <= up_to's sent_at.
+	conds = [
+		"thread = %(t)s",
+		"sender != %(u)s",
+		"COALESCE(delivery_status, 'sent') != 'read'",
+	]
+	values: dict[str, Any] = {"t": thread, "u": user, "now": now_datetime()}
+	if up_to:
+		ts = frappe.db.get_value("Chat Message", up_to, "sent_at")
+		if ts:
+			conds.append("sent_at <= %(ts)s")
+			values["ts"] = ts
+
+	rows = frappe.db.sql(
+		f"""SELECT name FROM `tabChat Message`
+		    WHERE {" AND ".join(conds)}""",
+		values,
+		as_dict=True,
+	)
+	ids = [r["name"] for r in rows]
+	if ids:
+		frappe.db.sql(
+			"""UPDATE `tabChat Message`
+			   SET delivery_status = 'read',
+			       delivered_at = COALESCE(delivered_at, %(now)s),
+			       read_at = %(now)s
+			   WHERE name IN %(ids)s""",
+			{"now": values["now"], "ids": tuple(ids)},
+		)
+
+	# Fold the caller's per-side unread counter to zero — same effect
+	# as the legacy ``mark_read`` API.
+	updates: dict[str, int] = {}
+	if user == t.get("driver"):
+		updates["unread_for_driver"] = 0
+	if user == t.get("passenger"):
+		updates["unread_for_passenger"] = 0
+	if _is_support(user) and user not in (t.get("driver"), t.get("passenger")):
+		updates["unread_for_support"] = 0
+	if updates:
+		frappe.db.set_value("Chat Thread", thread, updates, update_modified=False)
+
+	frappe.db.commit()
+
+	if ids:
+		frappe.publish_realtime(
+			event="rideshare:chat:status",
+			message={
+				"thread": thread,
+				"status": "read",
+				"messages": ids,
+				"by": user,
+				"at": values["now"].isoformat(),
+			},
+			room=f"chat:{thread}",
+			after_commit=False,
+		)
+	return {"ok": True, "thread": thread, "promoted": len(ids)}
 
 
 def _my_role(t: dict, user: str) -> str:
@@ -210,8 +385,28 @@ def _my_role(t: dict, user: str) -> str:
 
 
 @frappe.whitelist()
-def send_message(thread: str, body: str, attachment: str | None = None) -> dict:
-	"""Append a message to ``thread`` and broadcast it to subscribers."""
+def send_message(
+	thread: str,
+	body: str,
+	attachment: str | None = None,
+	message_type: str | None = None,
+	attachment_meta: str | dict | None = None,
+) -> dict:
+	"""Append a message to ``thread`` and broadcast it to subscribers.
+
+	``message_type``: one of ``text``, ``image``, ``audio``, ``file``,
+	``location`` — drives bubble rendering on the client.  When
+	omitted we infer ``text`` (or ``image``/``file`` from the
+	attachment URL extension as a friendly default).
+
+	``attachment_meta``: optional JSON metadata for non-text payloads:
+
+	  * image    — ``{"width": 800, "height": 600, "mime": "image/jpeg"}``
+	  * audio    — ``{"duration_seconds": 7.4, "mime": "audio/m4a"}``
+	  * file     — ``{"filename": "boarding.pdf", "mime": "application/pdf",
+	                  "size": 12489}``
+	  * location — ``{"lat": 12.97, "lng": 77.59, "label": "Cubbon Park"}``
+	"""
 
 	user = _user()
 	body = (body or "").strip()
@@ -222,12 +417,46 @@ def send_message(thread: str, body: str, attachment: str | None = None) -> dict:
 	if t.status == "Closed":
 		frappe.throw(_("This conversation is closed."))
 
+	# Default the message type intelligently when the caller didn't
+	# bother to set one — most clients (the mobile app definitely)
+	# always pass a text message without it.
+	resolved_type = (message_type or "").strip().lower()
+	if resolved_type not in ("text", "image", "audio", "file", "location", "system"):
+		if attachment:
+			ext = (attachment.rsplit(".", 1)[-1] or "").lower()
+			if ext in ("jpg", "jpeg", "png", "webp", "heic", "gif"):
+				resolved_type = "image"
+			elif ext in ("m4a", "mp3", "aac", "wav", "ogg", "opus"):
+				resolved_type = "audio"
+			else:
+				resolved_type = "file"
+		else:
+			resolved_type = "text"
+
+	# Normalise attachment_meta to a JSON-encoded string so the field
+	# accepts both a dict (preferred) and a string (RN form-encoded).
+	meta_payload: str | None = None
+	if attachment_meta:
+		try:
+			parsed = (
+				attachment_meta
+				if isinstance(attachment_meta, (dict, list))
+				else frappe.parse_json(attachment_meta)
+			)
+			if parsed is not None:
+				meta_payload = frappe.as_json(parsed)
+		except Exception:
+			meta_payload = None
+
 	doc = frappe.new_doc("Chat Message")
 	doc.thread = thread
 	doc.sender = user
 	doc.body = body[:5000]  # Long Text but cap to keep Redis payload sane
+	doc.message_type = resolved_type
 	if attachment:
 		doc.attachment = attachment
+	if meta_payload:
+		doc.attachment_meta = meta_payload
 	doc.flags.ignore_permissions = True
 	doc.insert(ignore_permissions=True)
 	frappe.db.commit()
@@ -240,6 +469,10 @@ def send_message(thread: str, body: str, attachment: str | None = None) -> dict:
 		"body": doc.body,
 		"sent_at": doc.sent_at.isoformat() if doc.sent_at else None,
 		"is_system": bool(doc.is_system),
+		"message_type": doc.message_type,
+		"attachment": doc.attachment,
+		"attachment_meta": doc.attachment_meta,
+		"delivery_status": doc.delivery_status or "sent",
 	}
 
 
@@ -382,6 +615,19 @@ def start_booking_chat(booking: str) -> dict:
 
 	Idempotent: if a thread already exists for ``booking`` we return it.
 	The caller must be a participant on that booking (driver or rider).
+
+	**Active-ride scope**: chat is only allowed once a booking has been
+	confirmed and before the trip is closed out.  This matches the
+	user's spec — driver and rider can talk between "ride accepted"
+	and "ride completed".  Pending bookings still create the thread
+	(so the driver-side review screen has a way to message the rider
+	before confirming) but riders see a "waiting for confirmation"
+	stub on their side.
+
+	Allowed booking statuses: ``Pending``, ``Confirmed``, ``InProgress``.
+	Blocked: ``Cancelled``, ``Completed`` — the chat for those rides
+	stays read-only via ``send_message``'s ``status == "Closed"`` check
+	(see also: close_thread when a ride completes).
 	"""
 
 	user = _user()
@@ -393,6 +639,8 @@ def start_booking_chat(booking: str) -> dict:
 	)
 	if not b:
 		frappe.throw(_("Booking not found."))
+	if b.status in ("Cancelled",):
+		frappe.throw(_("This booking was cancelled — no chat available."))
 
 	driver = frappe.db.get_value("Ride", b.ride, "driver")
 	if not driver:

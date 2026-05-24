@@ -2,7 +2,11 @@
 //
 // Stack
 // -----
-//   Map tiles:    OpenStreetMap raster via <UrlTile> (no Google key, no quota)
+//   Map tiles:    OpenStreetMap via Leaflet inside a WebView (TripMapWebView)
+//                 — see commit notes: react-native-maps was crashing on the
+//                 Android release builds the user was testing, so we
+//                 swapped to the same WebView+Leaflet pattern that
+//                 MyLocation and ChatThread already use successfully.
 //   Driver GPS:   expo-location (device chip — no API cost ever)
 //   Passenger GPS: expo-location (same)
 //   Route + ETA:  OSRM, proxied through the backend at
@@ -18,10 +22,6 @@
 //   passenger:  pushes its own GPS to push_passenger_location and renders
 //               the driver's latest fix + a road-snapped polyline from
 //               driver → destination with an ETA.
-//
-// Both roles get OSM tiles via <UrlTile>, so the only reason you'd need
-// a Google Maps key now is if you choose to set provider=PROVIDER_GOOGLE
-// (we deliberately don't).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -31,17 +31,9 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Alert,
-  Animated,
-  Easing,
   ScrollView
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import MapView, {
-  Marker,
-  Polyline,
-  UrlTile,
-  PROVIDER_DEFAULT
-} from "react-native-maps";
 import * as Location from "expo-location";
 import { useRoute, RouteProp, useNavigation } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -51,6 +43,9 @@ import {
   RideLocation,
   PassengerLocation
 } from "@/realtime/socket";
+import { findPathAStar, type LatLng as AStarLatLng } from "@/utils/astar";
+import { validLatLng } from "@/utils/mapSafe";
+import { TripMapWebView, type TripMapState } from "@/components/TripMapWebView";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -66,12 +61,20 @@ const POLL_INTERVAL_MS = 15_000;
 const ROUTE_REFRESH_MS = 30_000;
 // Don't bother re-routing if the driver hasn't moved further than this.
 const ROUTE_RECOMPUTE_DISTANCE_M = 250;
+// Re-run the A* search whenever the driver has moved more than this.
+// Keeping it lower than the OSRM threshold gives the on-screen path
+// noticeable life (it's much cheaper to recompute than the OSRM trip).
+const ASTAR_RECOMPUTE_DISTANCE_M = 150;
 
-// Tile providers — keep both keys here and switch by changing OSM_TILE_URL.
-// tile.openstreetmap.org is fine for dev; for production swap to a
-// commercial-friendly source (OpenFreeMap, MapTiler free tier, or
-// self-hosted tileserver-gl).
-const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+// Tile provider for the Leaflet WebView is hard-coded to
+// tile.openstreetmap.org inside TripMapWebView; production deployments
+// should switch to a commercial-friendly source there (OpenFreeMap,
+// MapTiler free tier, or a self-hosted tileserver-gl).
+//
+// Stroke colour for the A*-computed polyline.  Distinct from
+// `colors.primary` (used for the OSRM road route) so the on-screen
+// stat block reads as a secondary, computed overlay.
+const ASTAR_STROKE = "#0EA5A4"; // teal-500
 
 type Endpoints = {
   origin?: { lat: number; lng: number } | null;
@@ -130,6 +133,16 @@ export function TrackingScreen() {
   const [tripStatus, setTripStatus] = useState<string | null>(null);
   const [staleSeconds, setStaleSeconds] = useState<number | null>(null);
   const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  // A*-computed path (driver → pickup before trip starts, driver →
+  // destination during the trip).  Recomputed on demand when the driver
+  // moves significantly — see refreshAStar below.
+  const [aStarPath, setAStarPath] = useState<{
+    coords: { latitude: number; longitude: number }[];
+    distanceMeters: number;
+    expanded: number;
+    found: boolean;
+  } | null>(null);
+  const lastAStarFrom = useRef<{ lat: number; lng: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Driver's own GPS, kept in a ref so the push interval can read the
@@ -147,7 +160,6 @@ export function TrackingScreen() {
   const routeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastRouteAt = useRef<number>(0);
   const lastRouteFrom = useRef<{ lat: number; lng: number } | null>(null);
-  const mapRef = useRef<MapView | null>(null);
 
   // ---------------------------------------------------------------------
   // Route + ETA refresh.  Computes a road-snapped polyline from the
@@ -194,6 +206,69 @@ export function TrackingScreen() {
   useEffect(() => {
     refreshRoute();
   }, [refreshRoute]);
+
+  // ---------------------------------------------------------------------
+  // A* path: driver → rider pickup (before trip is in progress) or
+  // driver → ride destination (during the trip).  Pure-JS, runs on the
+  // device; the produced polyline is drawn alongside the OSRM road
+  // route so the user can see both the optimal-grid path and the
+  // road-snapped path.
+  //
+  // We only recompute when:
+  //   * we have a driver fix and at least one endpoint to head toward, AND
+  //   * the driver has moved more than ASTAR_RECOMPUTE_DISTANCE_M since
+  //     the last computation (or this is the first run).
+  //
+  // Goal selection:
+  //   * tripStatus === "InProgress"  → drive to destination
+  //   * otherwise                     → drive to pickup (origin)
+  //   * if the relevant endpoint is missing, fall back to whichever is.
+  // ---------------------------------------------------------------------
+  const refreshAStar = useCallback(() => {
+    if (!driverLoc) return;
+    if (!validLatLng(driverLoc.lat, driverLoc.lng)) return;
+
+    const tripActive = tripStatus === "InProgress";
+    const candidate =
+      (tripActive ? endpoints.destination : endpoints.origin) ??
+      endpoints.origin ??
+      endpoints.destination ??
+      null;
+    const goal: AStarLatLng | null =
+      candidate && validLatLng(candidate.lat, candidate.lng)
+        ? { lat: candidate.lat as number, lng: candidate.lng as number }
+        : null;
+    if (!goal) return;
+
+    const start = { lat: driverLoc.lat, lng: driverLoc.lng };
+    const lf = lastAStarFrom.current;
+    if (
+      lf &&
+      distanceMeters(lf, start) < ASTAR_RECOMPUTE_DISTANCE_M &&
+      aStarPath
+    ) {
+      return;
+    }
+
+    const result = findPathAStar(start, goal, {
+      gridSize: 60,
+      marginCells: 4
+    });
+    if (!result.path.length) return;
+    setAStarPath({
+      coords: result.path
+        .filter((p) => validLatLng(p.lat, p.lng))
+        .map((p) => ({ latitude: p.lat, longitude: p.lng })),
+      distanceMeters: result.distanceMeters,
+      expanded: result.expanded,
+      found: result.found
+    });
+    lastAStarFrom.current = start;
+  }, [driverLoc, endpoints.origin, endpoints.destination, tripStatus, aStarPath]);
+
+  useEffect(() => {
+    refreshAStar();
+  }, [refreshAStar]);
 
   // ---------------------------------------------------------------------
   // Lifecycle: bootstrap, subscribe, start pushing.
@@ -312,9 +387,22 @@ export function TrackingScreen() {
         }, POLL_INTERVAL_MS);
       }
 
-      // 3. Start streaming our own GPS.
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
+      // 3. Start streaming our own GPS.  `requestForegroundPermissionsAsync`
+      // can throw on devices where the native location module is in a
+      // broken state (e.g. R8-stripped classes); wrap defensively so the
+      // screen still renders the map + the existing snapshot.
+      let permissionStatus: Location.PermissionStatus | "denied" = "denied";
+      try {
+        const result = await Location.requestForegroundPermissionsAsync();
+        permissionStatus = result.status;
+      } catch {
+        Alert.alert(
+          "Location unavailable",
+          "We couldn't ask your phone for location access. Trip tracking will still show driver updates from the network."
+        );
+        return;
+      }
+      if (permissionStatus !== "granted") {
         Alert.alert(
           "Location required",
           role === "driver"
@@ -350,13 +438,14 @@ export function TrackingScreen() {
         }
       }
 
-      watchRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 3000,
-          distanceInterval: 10
-        },
-        (pos) => {
+      try {
+        watchRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 3000,
+            distanceInterval: 10
+          },
+          (pos) => {
           const isFirstFix = myFix.current == null;
           myFix.current = {
             lat: pos.coords.latitude,
@@ -394,38 +483,35 @@ export function TrackingScreen() {
           if (isFirstFix) pushFix();
         }
       );
-      pushRef.current = setInterval(pushFix, PUSH_INTERVAL_MS);
-      // Also refresh the route on a slow heartbeat so the ETA keeps
-      // ticking down even when the driver is stuck in traffic.
-      routeTimerRef.current = setInterval(refreshRoute, ROUTE_REFRESH_MS);
+        pushRef.current = setInterval(pushFix, PUSH_INTERVAL_MS);
+        // Also refresh the route on a slow heartbeat so the ETA keeps
+        // ticking down even when the driver is stuck in traffic.
+        routeTimerRef.current = setInterval(refreshRoute, ROUTE_REFRESH_MS);
+      } catch {
+        // Native watch failed (broken module, OS-level error) — without
+        // this guard the unhandled rejection silently crashed the app.
+        // Snapshot + socket data still drives the map.
+      }
     }
 
-    init();
+    // Fire-and-forget — but with a catch so any throw inside `init()`
+    // doesn't propagate as an unhandled rejection.  Hermes on Android
+    // release builds will silently kill the process otherwise.
+    init().catch(() => {/* errors already surfaced via Alert / state */});
+
     return () => {
       cancelled = true;
-      if (unsub) unsub();
-      if (watchRef.current) watchRef.current.remove();
-      if (pushRef.current) clearInterval(pushRef.current);
-      if (pollRef.current) clearInterval(pollRef.current);
-      if (routeTimerRef.current) clearInterval(routeTimerRef.current);
+      try { if (unsub) unsub(); } catch {/* noop */}
+      try { if (watchRef.current) watchRef.current.remove(); } catch {/* noop */}
+      try { if (pushRef.current) clearInterval(pushRef.current); } catch {/* noop */}
+      try { if (pollRef.current) clearInterval(pollRef.current); } catch {/* noop */}
+      try { if (routeTimerRef.current) clearInterval(routeTimerRef.current); } catch {/* noop */}
     };
   }, [params.rideId, role, bookingId, refreshRoute]);
 
-  // Recentre the camera whenever the focus pin moves significantly.
-  useEffect(() => {
-    if (!driverLoc || !mapRef.current) return;
-    mapRef.current.animateCamera(
-      {
-        center: { latitude: driverLoc.lat, longitude: driverLoc.lng },
-        heading: driverLoc.heading ?? 0,
-        pitch: 0,
-        zoom: 15
-      },
-      { duration: 700 }
-    );
-    // Only re-pan on coordinate change — full driverLoc object churns every tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [driverLoc?.lat, driverLoc?.lng]);
+  // Camera recentring is now done inside TripMapWebView itself
+  // (it pans Leaflet when the driver moves > ~80m).  No native ref
+  // to drive any more.
 
   async function startTrip() {
     setBusy(true);
@@ -480,122 +566,46 @@ export function TrackingScreen() {
   }
 
   const fresh = staleSeconds == null || staleSeconds < 30;
-  // Centre on whichever pin actually exists.
-  const cameraCentre =
-    driverLoc ??
-    (passengerList[0]
+
+  // Build the declarative state bag we hand to TripMapWebView.  All
+  // coordinate validation is centralised inside that component, so we
+  // can safely pass the raw values here.
+  const mapState: TripMapState = {
+    origin: endpoints.origin,
+    destination: endpoints.destination,
+    driver: driverLoc
       ? {
-          ride: params.rideId,
-          lat: passengerList[0].lat,
-          lng: passengerList[0].lng,
-          heading: passengerList[0].heading ?? null,
-          speed_kmh: passengerList[0].speed_kmh ?? null,
-          at: passengerList[0].at ?? new Date().toISOString()
+          lat: driverLoc.lat,
+          lng: driverLoc.lng,
+          heading: driverLoc.heading ?? 0,
+          fresh
         }
-      : null);
+      : null,
+    passengers: passengerList
+      .filter((p) => validLatLng(p.lat, p.lng))
+      .map((p) => ({
+        bookingId: p.booking,
+        lat: p.lat,
+        lng: p.lng,
+        isSelf: role === "passenger" && p.booking === bookingId
+      })),
+    route:
+      routeInfo && routeInfo.polyline.length >= 2
+        ? routeInfo.polyline
+            .filter((c) => validLatLng(c.latitude, c.longitude))
+            .map((c) => ({ lat: c.latitude, lng: c.longitude }))
+        : [],
+    aStar:
+      aStarPath && aStarPath.coords.length >= 2
+        ? aStarPath.coords
+            .filter((c) => validLatLng(c.latitude, c.longitude))
+            .map((c) => ({ lat: c.latitude, lng: c.longitude }))
+        : []
+  };
 
   return (
     <View style={s.shell}>
-      <MapView
-        ref={(m) => {
-          mapRef.current = m;
-        }}
-        style={{ flex: 1 }}
-        provider={PROVIDER_DEFAULT}
-        showsUserLocation={false}
-        showsCompass
-        initialRegion={{
-          latitude: cameraCentre?.lat ?? 20.5937,
-          longitude: cameraCentre?.lng ?? 78.9629,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05
-        }}
-      >
-        {/* Free, open-source map tiles — no Google Maps API key required.
-            For commercial-scale traffic, swap OSM_TILE_URL for a self-hosted
-            tileserver-gl or a free-tier provider like OpenFreeMap. */}
-        <UrlTile
-          urlTemplate={OSM_TILE_URL}
-          maximumZ={19}
-          flipY={false}
-          shouldReplaceMapContent={true}
-        />
-
-        {/* Pickup + destination pins (always rendered when we know them). */}
-        {endpoints.origin?.lat ? (
-          <Marker
-            coordinate={{
-              latitude: endpoints.origin.lat,
-              longitude: endpoints.origin.lng
-            }}
-            title="Pickup"
-            pinColor={colors.pickupPin}
-          />
-        ) : null}
-        {endpoints.destination?.lat ? (
-          <Marker
-            coordinate={{
-              latitude: endpoints.destination.lat,
-              longitude: endpoints.destination.lng
-            }}
-            title="Destination"
-            pinColor={colors.dropoffPin}
-          />
-        ) : null}
-
-        {/* Road-snapped route from driver → destination, from OSRM. */}
-        {routeInfo && routeInfo.polyline.length >= 2 ? (
-          <Polyline
-            coordinates={routeInfo.polyline}
-            strokeColor={colors.primary}
-            strokeWidth={4}
-          />
-        ) : endpoints.origin?.lat && endpoints.destination?.lat ? (
-          <Polyline
-            coordinates={[
-              {
-                latitude: endpoints.origin.lat,
-                longitude: endpoints.origin.lng
-              },
-              {
-                latitude: endpoints.destination.lat,
-                longitude: endpoints.destination.lng
-              }
-            ]}
-            strokeColor={colors.text}
-            strokeWidth={2}
-            lineDashPattern={[6, 6]}
-          />
-        ) : null}
-
-        {/* Driver pin */}
-        {driverLoc ? (
-          <Marker
-            coordinate={{
-              latitude: driverLoc.lat,
-              longitude: driverLoc.lng
-            }}
-            title={role === "driver" ? "You" : "Driver"}
-            rotation={driverLoc.heading ?? 0}
-            flat
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <CarMarker fresh={fresh} />
-          </Marker>
-        ) : null}
-
-        {/* Passenger pin(s) — one per active booking. */}
-        {passengerList.map((p) => (
-          <Marker
-            key={p.booking}
-            coordinate={{ latitude: p.lat, longitude: p.lng }}
-            title={role === "driver" ? "Passenger" : "You"}
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <PassengerMarker isSelf={role === "passenger" && p.booking === bookingId} />
-          </Marker>
-        ))}
-      </MapView>
+      <TripMapWebView state={mapState} style={{ flex: 1 }} />
 
       {/* Top bar: status + back */}
       <SafeAreaView style={s.topBar} edges={["top"]} pointerEvents="box-none">
@@ -664,6 +674,16 @@ export function TrackingScreen() {
                 {passengerList.length === 1 ? "rider" : "riders"}
               </Text>
             </View>
+            {aStarPath ? (
+              <View style={[s.statBlock, s.statBlockAStar]}>
+                <Text style={[s.statValue, { color: ASTAR_STROKE }]}>
+                  {(aStarPath.distanceMeters / 1000).toFixed(1)}
+                </Text>
+                <Text style={s.statLabel}>
+                  km · A*
+                </Text>
+              </View>
+            ) : null}
           </ScrollView>
           {role === "driver" && tripStatus !== "InProgress" && tripStatus !== "Completed" ? (
             <TouchableOpacity
@@ -687,73 +707,17 @@ export function TrackingScreen() {
           ) : null}
         </View>
         <Text style={s.attribution}>
-          Map © OpenStreetMap contributors · Route © OSRM
+          Map © OpenStreetMap contributors · Route © OSRM · A* on-device
         </Text>
       </SafeAreaView>
     </View>
   );
 }
 
-function CarMarker({ fresh }: { fresh: boolean }) {
-  const pulse = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, {
-          toValue: 1,
-          duration: 1400,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true
-        }),
-        Animated.timing(pulse, {
-          toValue: 0,
-          duration: 0,
-          useNativeDriver: true
-        })
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-
-  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.8] });
-  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] });
-
-  return (
-    <View style={s.markerWrap}>
-      <Animated.View
-        style={[
-          s.pulse,
-          {
-            transform: [{ scale }],
-            opacity,
-            backgroundColor: fresh ? colors.success : colors.warn
-          }
-        ]}
-      />
-      <View style={[s.driverPin, !fresh && { backgroundColor: colors.warn }]}>
-        <Ionicons name="car-sport" size={20} color={colors.primaryText} />
-      </View>
-    </View>
-  );
-}
-
-function PassengerMarker({ isSelf }: { isSelf: boolean }) {
-  return (
-    <View style={s.markerWrap}>
-      <View
-        style={[
-          s.paxPin,
-          isSelf
-            ? { backgroundColor: colors.primary, borderColor: "#fff" }
-            : { backgroundColor: colors.pickupPin, borderColor: "#fff" }
-        ]}
-      >
-        <Ionicons name="person" size={16} color={colors.primaryText} />
-      </View>
-    </View>
-  );
-}
+// CarMarker / PassengerMarker were native-map overlay components.
+// They've been replaced by div-icons inside the Leaflet WebView
+// (see TripMapWebView.tsx); the React layer no longer renders any
+// marker views.
 
 const s = StyleSheet.create({
   shell: { flex: 1, backgroundColor: colors.bgAlt },
@@ -821,6 +785,9 @@ const s = StyleSheet.create({
   },
   statValue: { fontSize: 18, fontWeight: "800", color: colors.text },
   statLabel: { fontSize: 11, color: colors.soft, marginTop: 2 },
+  statBlockAStar: {
+    borderLeftColor: ASTAR_STROKE
+  },
   btn: {
     backgroundColor: colors.primary,
     paddingHorizontal: 18,
@@ -836,26 +803,4 @@ const s = StyleSheet.create({
     paddingBottom: spacing(2)
   },
 
-  markerWrap: { width: 64, height: 64, alignItems: "center", justifyContent: "center" },
-  pulse: { position: "absolute", width: 36, height: 36, borderRadius: 18 },
-  driverPin: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.text,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "#fff",
-    ...shadow.floating
-  },
-  paxPin: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    ...shadow.floating
-  }
 });

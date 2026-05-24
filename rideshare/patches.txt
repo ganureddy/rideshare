@@ -4,3 +4,5 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+rideshare.patches.v1_chat_message_indexes
+rideshare.patches.v2_reviews_and_co2

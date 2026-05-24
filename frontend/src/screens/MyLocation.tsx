@@ -21,7 +21,10 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
-  RefreshControl
+  RefreshControl,
+  Linking,
+  Share,
+  Platform
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
@@ -93,6 +96,77 @@ export function MyLocationScreen() {
       "Coordinates",
       `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}\n\nOpenCage URL pattern:\n${url}`
     );
+  }
+
+  /**
+   * Build a human-friendly WhatsApp message with a tappable Google
+   * Maps link.  Google Maps is universal — every WhatsApp client on
+   * every Android version renders it as a rich preview that opens in
+   * the user's default maps app on tap.
+   */
+  function buildShareMessage(l: ResolvedLocation, live: boolean) {
+    const url = `https://maps.google.com/?q=${l.lat.toFixed(6)},${l.lng.toFixed(6)}`;
+    const address = l.formatted || l.address || "My current location";
+    const header = live ? "📍 My live location" : "📍 My location";
+    const liveNote = live
+      ? "\n\n(Open the link in Google Maps and tap the WhatsApp 'Live Location' option to share continuous updates.)"
+      : "";
+    return `${header}\n${address}\n\n${url}${liveNote}`;
+  }
+
+  /**
+   * Open WhatsApp directly to its contact picker with the location
+   * message pre-filled.  WhatsApp handles the rest:
+   *   1.  user picks one or more contacts / groups
+   *   2.  WhatsApp opens the conversation with our message in the
+   *       composer, complete with a Google Maps preview
+   *   3.  user taps "Send"
+   *
+   * Implementation note — we deliberately skip `Linking.canOpenURL`
+   * on Android.  Android 11+ requires a `<queries>` manifest entry
+   * for canOpenURL to return true even when the target app is
+   * installed, but `Linking.openURL` itself is allowed to fire
+   * implicit intents without any manifest declaration.  So we just
+   * try `openURL`, catch the throw if WhatsApp is missing, and fall
+   * through to `wa.me` (handled by the browser) → system share
+   * sheet.  This works on every Android version we support.
+   */
+  async function shareToWhatsApp(live: boolean) {
+    if (!loc) return;
+    const message = buildShareMessage(loc, live);
+    const encoded = encodeURIComponent(message);
+
+    // Direct scheme — opens WhatsApp's contact picker on Android,
+    // and on iOS too (when WhatsApp's URL handler is registered).
+    try {
+      await Linking.openURL(`whatsapp://send?text=${encoded}`);
+      return;
+    } catch {/* fall through */}
+
+    // Universal wa.me URL — handled by the browser, then bounced
+    // into WhatsApp.  Works without the WhatsApp app being the
+    // default handler for the whatsapp:// scheme.
+    try {
+      await Linking.openURL(`https://wa.me/?text=${encoded}`);
+      return;
+    } catch {/* fall through */}
+
+    // Final fallback: system share sheet — lets the user pick any
+    // messenger if WhatsApp is uninstalled or the URL handler is
+    // disabled.
+    try {
+      await Share.share({
+        message,
+        title: live ? "My live location" : "My current location"
+      });
+    } catch {
+      Alert.alert(
+        "Can't open WhatsApp",
+        Platform.OS === "android"
+          ? "Install WhatsApp from the Play Store, then try again."
+          : "Install WhatsApp from the App Store, then try again."
+      );
+    }
   }
 
   return (
@@ -187,6 +261,44 @@ export function MyLocationScreen() {
                     </Text>
                   </TouchableOpacity>
                 </View>
+              </View>
+
+              {/* Share row — WhatsApp first (primary action),
+                  then a secondary "Share live" pill, and finally
+                  a system share sheet for any other app. */}
+              <View style={s.shareRow}>
+                <TouchableOpacity
+                  style={[s.shareBtn, s.shareBtnWa]}
+                  onPress={() => shareToWhatsApp(false)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="logo-whatsapp" size={18} color="#FFFFFF" />
+                  <Text style={s.shareBtnText}>Share to WhatsApp</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.shareIconBtn}
+                  onPress={() => shareToWhatsApp(true)}
+                  activeOpacity={0.85}
+                  accessibilityLabel="Share live location"
+                >
+                  <Ionicons name="radio-outline" size={18} color={colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.shareIconBtn}
+                  onPress={async () => {
+                    if (!loc) return;
+                    try {
+                      await Share.share({
+                        message: buildShareMessage(loc, false),
+                        title: "My current location"
+                      });
+                    } catch {/* user cancelled */}
+                  }}
+                  activeOpacity={0.85}
+                  accessibilityLabel="Share to another app"
+                >
+                  <Ionicons name="share-social-outline" size={18} color={colors.text} />
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -341,6 +453,39 @@ const s = StyleSheet.create({
     fontSize: 12,
     color: colors.soft,
     fontVariant: ["tabular-nums"]
+  },
+
+  shareRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: spacing(3),
+    paddingTop: spacing(3),
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border
+  },
+  shareBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 11,
+    borderRadius: radii.md
+  },
+  shareBtnWa: {
+    backgroundColor: "#25D366"
+  },
+  shareBtnText: { color: "#FFFFFF", fontWeight: "700", fontSize: 14 },
+  shareIconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radii.md,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center"
   },
 
   section: {

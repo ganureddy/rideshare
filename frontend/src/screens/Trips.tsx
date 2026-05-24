@@ -12,6 +12,7 @@ import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/nativ
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
+import { RatingPromptModal, type PendingReview } from "@/components/RatingPrompt";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -51,9 +52,12 @@ type History = {
   past_rides: Ride[];
 };
 
-function fmtDateTime(s: string) {
+function fmtDateTime(s?: string | null) {
+  if (!s || typeof s !== "string") return "—";
   try {
-    return new Date(s.replace(" ", "T")).toLocaleString([], {
+    const d = new Date(s.replace(" ", "T"));
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleString([], {
       weekday: "short",
       day: "numeric",
       month: "short",
@@ -72,6 +76,8 @@ export function TripsScreen() {
   const [history, setHistory] = useState<History | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<"upcoming" | "history">("upcoming");
+  const [pending, setPending] = useState<PendingReview[]>([]);
+  const [activeReview, setActiveReview] = useState<PendingReview | null>(null);
 
   // Honour `startTab` whenever Profile (or any other caller) deep-links us.
   useEffect(() => {
@@ -107,6 +113,10 @@ export function TripsScreen() {
         }
       );
       setHistory(h || { past_bookings: [], past_rides: [] });
+      // Pending reviews are non-fatal — never block the screen on them.
+      call<PendingReview[]>("rideshare.api.reviews.pending_reviews", { limit: 10 })
+        .then((p) => setPending(Array.isArray(p) ? p : []))
+        .catch(() => setPending([]));
     } catch (e: any) {
       setErr(e?.message ?? "Couldn't load your trips. Pull to refresh.");
       setData(
@@ -147,6 +157,27 @@ export function TripsScreen() {
               </View>
             ) : null}
 
+            {pending.length > 0 ? (
+              <TouchableOpacity
+                style={s.reviewBanner}
+                onPress={() => setActiveReview(pending[0])}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="star" size={18} color="#FFCB1F" />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.reviewBannerTitle}>
+                    Rate your ride{pending.length === 1 ? "" : "s"}
+                  </Text>
+                  <Text style={s.reviewBannerSub} numberOfLines={1}>
+                    {pending[0].origin_city} → {pending[0].destination_city} ·{" "}
+                    {pending[0].ratee_name}
+                    {pending.length > 1 ? ` · +${pending.length - 1} more` : ""}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.soft} />
+              </TouchableOpacity>
+            ) : null}
+
             <View style={s.tabRow}>
               <TabButton
                 label="Upcoming"
@@ -167,6 +198,22 @@ export function TripsScreen() {
             )}
           </>
         }
+      />
+
+      <RatingPromptModal
+        visible={!!activeReview}
+        pending={activeReview}
+        onDone={() => {
+          // Pop the just-reviewed booking off the queue and either
+          // open the next pending review (so users can clear them in
+          // a row) or close the modal.
+          const remaining = pending.filter(
+            (p) => p.booking !== activeReview?.booking || p.direction !== activeReview?.direction
+          );
+          setPending(remaining);
+          setActiveReview(remaining[0] ?? null);
+        }}
+        onSkip={() => setActiveReview(null)}
       />
     </SafeAreaView>
   );
@@ -261,12 +308,12 @@ function UpcomingTab({
             <StatusChip status={b.status} />
           </View>
           <Text style={s.cardMeta}>
-            {fmtDateTime(b.departure_datetime)} · {b.seats_booked} seat
-            {b.seats_booked === 1 ? "" : "s"} · ₹{Math.round(b.total_amount)}
+            {fmtDateTime(b.departure_datetime)} · {Number(b.seats_booked) || 0} seat
+            {Number(b.seats_booked) === 1 ? "" : "s"} · ₹{Math.round(Number(b.total_amount) || 0)}
           </Text>
         </TouchableOpacity>
       ))}
-      {data && data.upcoming_bookings.length === 0 ? (
+      {data && (data.upcoming_bookings?.length ?? 0) === 0 ? (
         <Empty
           icon="ticket-outline"
           title="No upcoming bookings"
@@ -289,7 +336,7 @@ function UpcomingTab({
             <StatusChip status={r.status} />
           </View>
           <Text style={s.cardMeta}>
-            {fmtDateTime(r.departure_datetime)} · {r.seats_available}/{r.seats_total} seats left · ₹{Math.round(r.price_per_seat)}
+            {fmtDateTime(r.departure_datetime)} · {Number(r.seats_available) || 0}/{Number(r.seats_total) || 0} seats left · ₹{Math.round(Number(r.price_per_seat) || 0)}
           </Text>
           <View style={s.cardActions}>
             <View style={s.cardLink}>
@@ -308,7 +355,7 @@ function UpcomingTab({
           </View>
         </TouchableOpacity>
       ))}
-      {data && data.upcoming_rides.length === 0 ? (
+      {data && (data.upcoming_rides?.length ?? 0) === 0 ? (
         <Empty
           icon="car-outline"
           title="No rides published"
@@ -332,23 +379,47 @@ function HistoryTab({
     <>
       <Section title="Past bookings" />
       {past.map((b) => (
-        <TouchableOpacity
-          key={b.name}
-          style={[s.card, shadow.card]}
-          activeOpacity={0.85}
-          onPress={() => nav.navigate("RideDetail", { rideId: b.ride })}
-        >
-          <View style={s.cardHead}>
-            <Text style={s.cardRoute} numberOfLines={1}>
-              {b.origin_city} → {b.destination_city}
+        <View key={b.name} style={[s.card, shadow.card]}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => nav.navigate("RideDetail", { rideId: b.ride })}
+          >
+            <View style={s.cardHead}>
+              <Text style={s.cardRoute} numberOfLines={1}>
+                {b.origin_city} → {b.destination_city}
+              </Text>
+              <StatusChip status={b.status} />
+            </View>
+            <Text style={s.cardMeta}>
+              {fmtDateTime(b.departure_datetime)} · {Number(b.seats_booked) || 0} seat
+              {Number(b.seats_booked) === 1 ? "" : "s"} · ₹{Math.round(Number(b.total_amount) || 0)}
             </Text>
-            <StatusChip status={b.status} />
+          </TouchableOpacity>
+          {/* One-tap re-book — pre-fills the same route into the
+              search screen so the rider can re-discover today's
+              equivalent of last week's trip in one tap. */}
+          <View style={s.cardActions}>
+            <TouchableOpacity
+              style={s.cardLink}
+              activeOpacity={0.85}
+              onPress={() =>
+                nav.navigate("SearchResults", {
+                  origin: { id: b.origin_city, label: b.origin_city, lat: 0, lng: 0 } as any,
+                  destination: {
+                    id: b.destination_city,
+                    label: b.destination_city,
+                    lat: 0,
+                    lng: 0
+                  } as any,
+                  seats: Number(b.seats_booked) || 1
+                })
+              }
+            >
+              <Ionicons name="repeat" size={13} color={colors.text} />
+              <Text style={s.cardLinkText}>Book this route again</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={s.cardMeta}>
-            {fmtDateTime(b.departure_datetime)} · {b.seats_booked} seat
-            {b.seats_booked === 1 ? "" : "s"} · ₹{Math.round(b.total_amount)}
-          </Text>
-        </TouchableOpacity>
+        </View>
       ))}
       {history && past.length === 0 ? (
         <Empty
@@ -373,8 +444,8 @@ function HistoryTab({
             <StatusChip status={r.status} />
           </View>
           <Text style={s.cardMeta}>
-            {fmtDateTime(r.departure_datetime)} · {r.seats_total} seat
-            {r.seats_total === 1 ? "" : "s"} · ₹{Math.round(r.price_per_seat)}
+            {fmtDateTime(r.departure_datetime)} · {Number(r.seats_total) || 0} seat
+            {Number(r.seats_total) === 1 ? "" : "s"} · ₹{Math.round(Number(r.price_per_seat) || 0)}
           </Text>
         </TouchableOpacity>
       ))}
@@ -520,5 +591,19 @@ const s = StyleSheet.create({
     borderColor: "#F8C8C2",
     marginBottom: spacing(3)
   },
-  errText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 }
+  errText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 },
+
+  reviewBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: spacing(3),
+    backgroundColor: "#FFF8E1",
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: "#FFE082",
+    marginBottom: spacing(3)
+  },
+  reviewBannerTitle: { fontSize: 14, fontWeight: "800", color: colors.text },
+  reviewBannerSub: { fontSize: 12, color: colors.soft, marginTop: 2 }
 });

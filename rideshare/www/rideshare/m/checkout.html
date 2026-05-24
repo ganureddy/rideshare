@@ -1,0 +1,193 @@
+{%- extends "templates/web.html" -%}
+{%- block page_content -%}
+<style>
+  body, body.web-page-content { background:#FFFFFF !important; margin:0; padding:0; }
+  .navbar, .web-footer, .website-footer, .page-footer, .page-breadcrumbs { display:none !important; }
+  .page_content, .web-page-content { padding:0 !important; }
+
+  :root {
+    --rs-text:#0A0A0A;
+    --rs-soft:#6B7176;
+    --rs-bg:#FFFFFF;
+    --rs-bg-alt:#F4F6F8;
+    --rs-border:#E5E7EB;
+    --rs-brand:#0EA5A4;
+    --rs-success:#1F8A4C;
+    --rs-danger:#D32F2F;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+  .rs-pay-shell{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:100vh;width:100%;
+    font-family:-apple-system,BlinkMacSystemFont,Roboto,Segoe UI,sans-serif;
+    color:var(--rs-text);background:var(--rs-bg);
+    padding:24px;
+  }
+  .rs-pay-card{
+    width:100%;max-width:420px;
+    border:1px solid var(--rs-border);border-radius:16px;
+    padding:28px 24px;text-align:center;
+    box-shadow:0 4px 16px rgba(0,0,0,.06);
+  }
+  .rs-pay-card h1{margin:0 0 4px;font-size:18px;font-weight:800;letter-spacing:-.3px;}
+  .rs-pay-card p{margin:0 0 16px;font-size:13px;color:var(--rs-soft);line-height:1.5;}
+  .rs-pay-amount{
+    font-size:36px;font-weight:800;letter-spacing:-1px;color:var(--rs-text);
+    margin:8px 0 6px;
+  }
+  .rs-pay-route{font-size:14px;color:var(--rs-soft);margin-bottom:20px;}
+  .rs-pay-btn{
+    appearance:none;border:0;cursor:pointer;
+    width:100%;padding:14px 16px;
+    background:var(--rs-text);color:#fff;
+    font-size:15px;font-weight:800;letter-spacing:-.2px;
+    border-radius:12px;
+  }
+  .rs-pay-btn:active{background:#1A1A1A;}
+  .rs-pay-btn:disabled{background:var(--rs-soft);cursor:not-allowed;}
+  .rs-pay-cancel{
+    appearance:none;border:0;background:transparent;cursor:pointer;
+    margin-top:14px;font-size:13px;color:var(--rs-soft);
+    text-decoration:underline;
+  }
+  .rs-pay-secure{
+    margin-top:18px;font-size:11px;color:var(--rs-soft);
+    display:flex;align-items:center;justify-content:center;gap:6px;
+  }
+  .rs-pay-status{
+    margin-top:14px;font-size:13px;color:var(--rs-soft);
+  }
+  .rs-pay-err{
+    background:#FDECEA;color:var(--rs-danger);font-size:13px;
+    padding:14px 16px;border:1px solid #F8C8C2;border-radius:10px;margin:8px 0;
+    text-align:center;
+  }
+</style>
+
+<div class="rs-pay-shell">
+  {%- if error -%}
+    <div class="rs-pay-card">
+      <div class="rs-pay-err">{{ error }}</div>
+      <button class="rs-pay-cancel" type="button" onclick="postBack({type:'payment-cancelled', reason:{{ error|tojson }}})">Close</button>
+    </div>
+  {%- else -%}
+    <div class="rs-pay-card">
+      <h1>{{ checkout.name }}</h1>
+      <p>{{ checkout.description }}</p>
+      <div class="rs-pay-amount">₹{{ "%.0f"|format(checkout.amount_rupees or 0) }}</div>
+      <div class="rs-pay-route">Total to pay (one-time, refundable per ride policy)</div>
+      <button id="rs-pay-go" class="rs-pay-btn" type="button">Pay with UPI / Card / Netbanking</button>
+      <div class="rs-pay-status" id="rs-pay-status"></div>
+      <button class="rs-pay-cancel" type="button" onclick="postBack({type:'payment-cancelled', reason:'user_cancelled'})">Cancel</button>
+      <div class="rs-pay-secure">
+        🔒 Secured by Razorpay · PCI DSS Level 1
+      </div>
+    </div>
+  {%- endif -%}
+</div>
+
+{%- if not error -%}
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+(function () {
+  var CTX = {{ checkout|tojson }};
+
+  function postBack(payload) {
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+      }
+    } catch (e) { /* noop */ }
+  }
+  window.postBack = postBack;
+
+  var statusEl = document.getElementById("rs-pay-status");
+  var btnEl = document.getElementById("rs-pay-go");
+
+  function setStatus(text) { if (statusEl) statusEl.textContent = text || ""; }
+
+  function open() {
+    setStatus("Opening secure checkout…");
+    if (btnEl) btnEl.disabled = true;
+
+    var options = {
+      key: CTX.key_id,
+      amount: CTX.amount_paise,
+      currency: CTX.currency || "INR",
+      name: CTX.name,
+      description: CTX.description || "",
+      order_id: CTX.order_id,
+      // Pre-fill where we know it; users can edit before paying.
+      prefill: {
+        name: (CTX.prefill && CTX.prefill.name) || "",
+        email: (CTX.prefill && CTX.prefill.email) || "",
+        contact: (CTX.prefill && CTX.prefill.contact) || ""
+      },
+      notes: CTX.notes || {},
+      theme: { color: CTX.theme_color || "#0EA5A4" },
+      // UPI is the cheapest + fastest path in India — list it first.
+      method: { upi: 1, card: 1, netbanking: 1, wallet: 1 },
+      handler: function (resp) {
+        // Success — postback to RN.  RN will then call
+        // rideshare.api.bookings.confirm_payment with these values.
+        setStatus("Payment received, confirming…");
+        postBack({
+          type: "payment-success",
+          booking: CTX.booking,
+          razorpay_order_id: resp.razorpay_order_id,
+          razorpay_payment_id: resp.razorpay_payment_id,
+          razorpay_signature: resp.razorpay_signature
+        });
+      },
+      modal: {
+        ondismiss: function () {
+          setStatus("Payment cancelled.");
+          if (btnEl) btnEl.disabled = false;
+          postBack({ type: "payment-cancelled", reason: "modal_dismissed" });
+        },
+        confirm_close: false,
+        escape: true,
+        backdropclose: false
+      }
+    };
+
+    var rzp;
+    try {
+      rzp = new Razorpay(options);
+    } catch (e) {
+      setStatus("Razorpay isn't loaded — check your internet connection.");
+      postBack({ type: "payment-failed", reason: "razorpay_load_failed" });
+      if (btnEl) btnEl.disabled = false;
+      return;
+    }
+
+    rzp.on("payment.failed", function (resp) {
+      setStatus("Payment failed.");
+      postBack({
+        type: "payment-failed",
+        booking: CTX.booking,
+        reason: (resp && resp.error && resp.error.description) || "payment_failed",
+        code: resp && resp.error && resp.error.code,
+        order_id: resp && resp.error && resp.error.metadata && resp.error.metadata.order_id,
+        payment_id: resp && resp.error && resp.error.metadata && resp.error.metadata.payment_id
+      });
+      if (btnEl) btnEl.disabled = false;
+    });
+
+    rzp.open();
+  }
+
+  if (btnEl) btnEl.addEventListener("click", open);
+
+  // Auto-open the modal on page load — most users tap Pay → see
+  // the checkout immediately without an extra interaction.  Fall
+  // back to the button if autoplay is blocked (rare on Android
+  // WebView, but possible on some OEM browsers).
+  setTimeout(function () { open(); }, 250);
+
+  postBack({ type: "ready", booking: CTX.booking });
+})();
+</script>
+{%- endif -%}
+{%- endblock -%}

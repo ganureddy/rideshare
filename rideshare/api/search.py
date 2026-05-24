@@ -143,22 +143,64 @@ def search_rides(
 		)
 	rows = rows[: int(limit)]
 
-	# Hydrate driver info.
-	for row in rows:
-		dp = frappe.db.get_value(
+	# Hydrate driver + vehicle info.  We bulk-fetch in one go for the
+	# whole result set rather than per-row to keep this endpoint snappy
+	# even with the over-fetch buffer.
+	driver_ids = list({r.driver for r in rows if r.driver})
+	dp_by_user: dict[str, dict] = {}
+	if driver_ids:
+		for dp in frappe.db.get_all(
 			"Driver Profile",
-			{"user": row.driver},
-			["full_name", "avg_rating", "total_trips", "is_verified"],
+			filters={"user": ["in", driver_ids]},
+			fields=["user", "full_name", "avg_rating", "total_reviews", "total_trips", "is_verified"],
+		):
+			dp_by_user[dp["user"]] = dp
+
+	# Driver display-name fallback when there's no Driver Profile yet.
+	user_meta: dict[str, dict] = {}
+	if driver_ids:
+		for u in frappe.db.get_all(
+			"User",
+			filters={"name": ["in", driver_ids]},
+			fields=["name", "full_name", "user_image"],
+		):
+			user_meta[u["name"]] = u
+
+	# First photo per ride — bulk fetch the front-most car shot for
+	# every distinct vehicle in the result set.  Drives the search
+	# card thumbnail.
+	ride_to_vehicle: dict[str, str] = {}
+	for r in rows:
+		v = frappe.db.get_value("Ride", r.name, "vehicle")
+		if v:
+			ride_to_vehicle[r.name] = v
+	first_photo_by_vehicle: dict[str, str] = {}
+	if ride_to_vehicle:
+		for vp in frappe.db.sql(
+			"""SELECT parent, photo
+			   FROM `tabVehicle Photo`
+			   WHERE parent IN %(ids)s AND photo IS NOT NULL
+			   ORDER BY idx ASC""",
+			{"ids": tuple(set(ride_to_vehicle.values()))},
 			as_dict=True,
-		) or {}
-		full_name = dp.get("full_name") or frappe.db.get_value(
-			"User", row.driver, "full_name"
-		) or "Driver"
+		):
+			first_photo_by_vehicle.setdefault(vp["parent"], vp["photo"])
+
+	for row in rows:
+		dp = dp_by_user.get(row.driver, {}) or {}
+		um = user_meta.get(row.driver, {}) or {}
+		full_name = dp.get("full_name") or um.get("full_name") or "Driver"
 		row["driver_name"] = full_name
 		row["driver_initials"] = "".join(p[:1].upper() for p in full_name.split()[:2]) or "D"
+		row["driver_image"] = um.get("user_image") or None
 		row["driver_avg_rating"] = float(dp.get("avg_rating") or 0)
+		row["driver_total_reviews"] = int(dp.get("total_reviews") or 0)
 		row["driver_total_trips"] = int(dp.get("total_trips") or 0)
 		row["driver_is_verified"] = bool(dp.get("is_verified") or 0)
+		# Vehicle thumb — first uploaded photo.  Falls back to null,
+		# the client renders an Ionicons placeholder in that case.
+		veh = ride_to_vehicle.get(row.name)
+		row["vehicle_photo"] = first_photo_by_vehicle.get(veh) if veh else None
 
 	# Compatibility: keep both `rides` (new) and `results` (legacy) keys.
 	return {

@@ -25,6 +25,14 @@ class ChatMessage(Document):
 			self.sent_at = now_datetime()
 		if not self.sender:
 			self.sender = frappe.session.user
+		# Default lifecycle on a fresh message is "sent".  The sender's
+		# own pane treats a sent message as ✓; the recipient's first
+		# fetch / mark_delivered call promotes it to "delivered" (✓✓);
+		# their explicit mark-read promotes to "read" (✓✓ blue).
+		if not self.delivery_status:
+			self.delivery_status = "sent"
+		if not self.message_type:
+			self.message_type = "system" if self.is_system else "text"
 		# Always derive sender_role from the thread (don't trust client input)
 		# unless the caller explicitly marked this as a System message.
 		if self.sender_role == "System" and self.is_system:
@@ -71,10 +79,17 @@ class ChatMessage(Document):
 	def _broadcast(self) -> None:
 		"""Push the new message onto the realtime room for this thread.
 
-		Includes ``sender_name`` (the User's ``full_name``) so the mobile
-		WebView and the rider/driver dashboards can render the real
-		person's name above the bubble — instead of leaving it blank /
-		falling back to a generic role label after a realtime update.
+		The payload mirrors what `get_thread` returns so the client can
+		`appendMessage(payload)` directly without a re-fetch.  Includes:
+
+		  * ``sender_name`` — User.full_name, so bubbles label the real
+		    person rather than falling back to a generic role label.
+		  * ``message_type`` + ``attachment`` + ``attachment_meta`` — the
+		    client uses these to switch between text / image / audio /
+		    file bubble rendering.
+		  * ``delivery_status`` — starts as "sent"; updated later via
+		    rideshare:chat:status events as the recipient receives /
+		    reads the message.
 		"""
 
 		sender_name = (
@@ -89,6 +104,10 @@ class ChatMessage(Document):
 			"body": self.body,
 			"sent_at": self.sent_at.isoformat() if self.sent_at else None,
 			"is_system": bool(self.is_system),
+			"message_type": self.message_type or "text",
+			"attachment": self.attachment,
+			"attachment_meta": self.attachment_meta,
+			"delivery_status": self.delivery_status or "sent",
 		}
 		frappe.publish_realtime(
 			event="rideshare:chat:message",

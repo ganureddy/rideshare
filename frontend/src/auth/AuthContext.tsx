@@ -4,6 +4,7 @@ import * as WebBrowser from "expo-web-browser";
 import { call } from "@/api/client";
 import { ENV } from "@/env";
 import { unregisterPushTokenForUser } from "@/notifications/push";
+import { closeSocket } from "@/realtime/socket";
 import { credentialsStore, Credentials } from "./store";
 
 type Profile = {
@@ -40,19 +41,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const stored = await credentialsStore.get();
-      setCreds(stored);
-      if (stored) {
-        try {
-          const p = await call<Profile & { user: string }>("rideshare.api.auth.whoami");
-          setProfile(p);
-        } catch {
-          // Token rejected — clear stale creds.
-          await credentialsStore.clear();
-          setCreds(null);
+      try {
+        const stored = await credentialsStore.get();
+        setCreds(stored);
+        if (stored) {
+          try {
+            const p = await call<Profile & { user: string }>("rideshare.api.auth.whoami");
+            setProfile(p);
+          } catch {
+            // Token rejected — clear stale creds.
+            try {
+              await credentialsStore.clear();
+            } catch {/* persistence errors don't matter for auth state */}
+            setCreds(null);
+          }
         }
+      } catch {
+        // Storage/auth bootstrap failed — degrade to "logged out" state
+        // so the app still renders the Login screen instead of crashing.
+        setCreds(null);
+      } finally {
+        setReady(true);
       }
-      setReady(true);
     })();
   }, []);
 
@@ -218,8 +228,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await unregisterPushTokenForUser();
         } catch {/* best-effort */}
         try {
+          await call("rideshare.api.presence.go_offline");
+        } catch {/* best-effort */}
+        try {
           await call("rideshare.api.auth.revoke_tokens");
         } catch {/* best-effort */}
+        // Tear the singleton realtime socket down so the next login
+        // bootstraps a fresh connection with the new credentials —
+        // and so the previous user's listeners can't fire for the
+        // next user's session.
+        try { closeSocket(); } catch {/* noop */}
         await credentialsStore.clear();
         setCreds(null);
         setProfile(null);

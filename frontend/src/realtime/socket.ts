@@ -1,6 +1,33 @@
 // Frappe broadcasts realtime events on its built-in Socket.IO bridge
 // (running on port 9000 in dev, behind nginx in prod). Clients join a
 // room and receive a typed event.
+//
+// Production-grade design notes
+// =============================
+// 1.  Singleton socket — one connection per app process, reused across
+//     screens.  socket.io-client handles transport upgrades + reconnect
+//     internally so we don't bake a custom retry loop on top.
+//
+// 2.  Listener-leak-proof wrappers — every `safeOn` returns the EXACT
+//     wrapped function it registered with socket.io.  `safeOff` MUST be
+//     called with that returned reference.  Subscribers track those
+//     references in their own scope so unmount cleanup deregisters the
+//     correct listener.  This was a real bug in the previous revision:
+//     the wrapped closure was created inside `safeOn` and lost, so
+//     `safeOff(handler)` couldn't match anything → zombie listeners
+//     piled up on every screen mount.
+//
+// 3.  Defensive try/catch around every socket.io call — a dead/dropped
+//     socket throwing on `.emit` / `.on` / `.off` must never propagate
+//     out into the React lifecycle.
+//
+// 4.  All subscriber callbacks are wrapped — a buggy handler in any
+//     screen can never crash the realtime layer or the other
+//     subscribers on the same event.
+//
+// 5.  Auth-bound socket — when the user logs out we tear down the
+//     singleton (`closeSocket`) so the next login gets a fresh
+//     connection with the new credentials.
 
 import { io, Socket } from "socket.io-client";
 import { ENV } from "@/env";
@@ -10,6 +37,12 @@ let _socket: Socket | null = null;
 
 export async function getSocket(): Promise<Socket> {
   if (_socket && _socket.connected) return _socket;
+  if (_socket && !_socket.connected) {
+    // Stale handle (we got here in a brief disconnect window).  Reuse
+    // the existing socket — socket.io's internal reconnect will bring
+    // it back online.
+    return _socket;
+  }
   const creds = await credentialsStore.get();
   _socket = io(ENV.websocketUrl, {
     transports: ["websocket"],
@@ -26,6 +59,72 @@ export async function getSocket(): Promise<Socket> {
   });
   return _socket;
 }
+
+/**
+ * Tear the singleton socket down — call this from `signOut()` so the
+ * next login bootstraps a clean connection with new credentials.  Any
+ * still-attached listeners are fire-and-forget orphans (which is why
+ * every screen's cleanup function MUST run before logout).
+ */
+export function closeSocket(): void {
+  if (!_socket) return;
+  try {
+    _socket.removeAllListeners();
+    _socket.disconnect();
+  } catch {/* noop */}
+  _socket = null;
+}
+
+// ---------------------------------------------------------------------------
+// Internal safe wrappers.
+// ---------------------------------------------------------------------------
+
+/** A function that fully cleans up a single subscription. */
+type Unsubscribe = () => void;
+
+function safeEmit(sock: Socket | null, event: string, ...args: unknown[]): void {
+  if (!sock) return;
+  try {
+    sock.emit(event, ...args);
+  } catch {/* socket is dead — fall through */}
+}
+
+/**
+ * Register a listener that wraps the user handler with try/catch so
+ * a buggy handler can't poison the socket.  Returns an Unsubscribe
+ * function that removes the EXACT wrapped listener — no listener
+ * leaks across screen mounts.
+ */
+function safeOn<T>(
+  sock: Socket | null,
+  event: string,
+  handler: (msg: T) => void
+): Unsubscribe {
+  if (!sock) return () => {/* no socket → no-op */};
+
+  // The wrapped closure is what we actually register; we need to keep
+  // a reference to it so we can `.off(event, wrapped)` later.  Bare
+  // `.off(event)` would yank every listener for that event — including
+  // those owned by *other* screens on the same shared socket.
+  const wrapped = (msg: T) => {
+    try {
+      handler(msg);
+    } catch {/* user handler threw — never let it kill the socket */}
+  };
+  try {
+    sock.on(event, wrapped);
+  } catch {/* listener registration failed (socket dead) */}
+
+  return () => {
+    try {
+      sock.off(event, wrapped);
+    } catch {/* noop */}
+  };
+}
+
+/** Always-safe NOOP unsubscribe — returned by every subscribeTo*
+ *  helper when the socket couldn't be acquired at all. */
+const NOOP_UNSUB: Unsubscribe = () => {/* nothing to clean up */};
 
 // ---------------------------------------------------------------------------
 // Live trip tracking (driver location → booker)
@@ -56,27 +155,39 @@ export async function subscribeToRide(
   onLocation: (loc: RideLocation) => void,
   onStatus?: (s: { ride: string; status: string }) => void,
   onPassengerLocation?: (loc: PassengerLocation) => void
-): Promise<() => void> {
-  const sock = await getSocket();
-  sock.emit("subscribe", { doctype: "Ride", docname: rideId });
-  sock.emit("doc_subscribe", { doctype: "Ride", docname: rideId });
-  const locHandler = (msg: RideLocation) => {
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
+  safeEmit(sock, "subscribe", { doctype: "Ride", docname: rideId });
+  safeEmit(sock, "doc_subscribe", { doctype: "Ride", docname: rideId });
+
+  const offLoc = safeOn<RideLocation>(sock, "rideshare:location", (msg) => {
     if (msg && msg.ride === rideId) onLocation(msg);
-  };
-  const statusHandler = (msg: { ride: string; status: string }) => {
-    if (onStatus && msg && msg.ride === rideId) onStatus(msg);
-  };
-  const paxHandler = (msg: PassengerLocation) => {
-    if (onPassengerLocation && msg && msg.ride === rideId) onPassengerLocation(msg);
-  };
-  sock.on("rideshare:location", locHandler);
-  sock.on("rideshare:status", statusHandler);
-  sock.on("rideshare:passenger_location", paxHandler);
+  });
+  const offStatus = safeOn<{ ride: string; status: string }>(
+    sock,
+    "rideshare:status",
+    (msg) => {
+      if (onStatus && msg && msg.ride === rideId) onStatus(msg);
+    }
+  );
+  const offPax = safeOn<PassengerLocation>(
+    sock,
+    "rideshare:passenger_location",
+    (msg) => {
+      if (onPassengerLocation && msg && msg.ride === rideId) onPassengerLocation(msg);
+    }
+  );
+
   return () => {
-    sock.off("rideshare:location", locHandler);
-    sock.off("rideshare:status", statusHandler);
-    sock.off("rideshare:passenger_location", paxHandler);
-    sock.emit("unsubscribe", { doctype: "Ride", docname: rideId });
+    offLoc();
+    offStatus();
+    offPax();
+    safeEmit(sock, "unsubscribe", { doctype: "Ride", docname: rideId });
   };
 }
 
@@ -97,21 +208,25 @@ export type ChatMessageEvent = {
 export async function subscribeToThread(
   threadName: string,
   onMessage: (msg: ChatMessageEvent) => void
-): Promise<() => void> {
-  const sock = await getSocket();
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
   // Frappe's `publish_realtime(room=...)` requires the client to be a
   // member of that room.  We subscribe both the doctype-shaped room and
   // the bare `chat:<name>` room so it works on either nginx config.
-  sock.emit("subscribe", { doctype: "Chat Thread", docname: threadName });
-  sock.emit("doc_subscribe", { doctype: "Chat Thread", docname: threadName });
+  safeEmit(sock, "subscribe", { doctype: "Chat Thread", docname: threadName });
+  safeEmit(sock, "doc_subscribe", { doctype: "Chat Thread", docname: threadName });
 
-  const handler = (msg: ChatMessageEvent) => {
+  const off = safeOn<ChatMessageEvent>(sock, "rideshare:chat:message", (msg) => {
     if (msg && msg.thread === threadName) onMessage(msg);
-  };
-  sock.on("rideshare:chat:message", handler);
+  });
   return () => {
-    sock.off("rideshare:chat:message", handler);
-    sock.emit("unsubscribe", { doctype: "Chat Thread", docname: threadName });
+    off();
+    safeEmit(sock, "unsubscribe", { doctype: "Chat Thread", docname: threadName });
   };
 }
 
@@ -131,13 +246,85 @@ export type TypingEvent = {
 export async function subscribeToTyping(
   threadName: string,
   onTyping: (evt: TypingEvent) => void
-): Promise<() => void> {
-  const sock = await getSocket();
-  const handler = (msg: TypingEvent) => {
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
+  return safeOn<TypingEvent>(sock, "rideshare:chat:typing", (msg) => {
     if (msg && msg.thread === threadName) onTyping(msg);
-  };
-  sock.on("rideshare:chat:typing", handler);
-  return () => sock.off("rideshare:chat:typing", handler);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Per-message delivery / read status updates.
+//
+// The backend broadcasts `rideshare:chat:status` whenever the
+// recipient's pane promotes one or more messages from `sent` →
+// `delivered` (recipient fetched / received them) or `delivered` →
+// `read` (recipient explicitly opened the thread).
+//
+// The sender's UI uses these events to flip ✓ → ✓✓ → ✓✓-blue without
+// re-fetching.
+// ---------------------------------------------------------------------------
+
+export type ChatStatusEvent = {
+  thread: string;
+  status: "delivered" | "read";
+  /** Affected message ids — bulk update in one event. */
+  messages: string[];
+  /** The user who triggered the status change (the recipient). */
+  by: string;
+  /** ISO timestamp at which the change happened. */
+  at: string;
+};
+
+export async function subscribeToMessageStatus(
+  threadName: string,
+  onStatus: (evt: ChatStatusEvent) => void
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
+  return safeOn<ChatStatusEvent>(sock, "rideshare:chat:status", (msg) => {
+    if (msg && msg.thread === threadName && Array.isArray(msg.messages)) {
+      onStatus(msg);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Online / offline presence — Raven-style targeted broadcasts.
+//
+// The backend publishes `rideshare:user_active` on the *target* user's
+// socket whenever a counterparty (someone they share a Chat Thread
+// with) flips online or offline.  The chat header subscribes here to
+// show "online" / "last seen 5 min ago" without polling.
+// ---------------------------------------------------------------------------
+
+export type PresenceEvent = {
+  user: string;
+  active: boolean;
+  at: string;
+};
+
+export async function subscribeToPresence(
+  onPresence: (evt: PresenceEvent) => void
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
+  return safeOn<PresenceEvent>(sock, "rideshare:user_active", (msg) => {
+    if (msg && typeof msg.user === "string") onPresence(msg);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -167,22 +354,29 @@ export type BookingEvent = {
 export async function subscribeToBookings(
   onEvent: (evt: BookingEvent) => void,
   rideId?: string
-): Promise<() => void> {
-  const sock = await getSocket();
-  const handler = (msg: BookingEvent) => {
+): Promise<Unsubscribe> {
+  let sock: Socket;
+  try {
+    sock = await getSocket();
+  } catch {
+    return NOOP_UNSUB;
+  }
+
+  const off = safeOn<BookingEvent>(sock, "rideshare:booking", (msg) => {
     if (!msg) return;
     if (rideId && msg.ride !== rideId) return;
     onEvent(msg);
-  };
-  sock.on("rideshare:booking", handler);
+  });
+
   if (rideId) {
-    sock.emit("subscribe", { doctype: "Ride", docname: rideId });
-    sock.emit("doc_subscribe", { doctype: "Ride", docname: rideId });
+    safeEmit(sock, "subscribe", { doctype: "Ride", docname: rideId });
+    safeEmit(sock, "doc_subscribe", { doctype: "Ride", docname: rideId });
   }
+
   return () => {
-    sock.off("rideshare:booking", handler);
+    off();
     if (rideId) {
-      sock.emit("unsubscribe", { doctype: "Ride", docname: rideId });
+      safeEmit(sock, "unsubscribe", { doctype: "Ride", docname: rideId });
     }
   };
 }

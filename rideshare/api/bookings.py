@@ -59,16 +59,36 @@ def create_booking(
 	ride: str,
 	seats: int = 1,
 	message: str | None = None,
+	pay_later: int | bool = 0,
 ) -> dict:
-	"""Reserve seats and create a payment order.
+	"""Reserve seats and (optionally) create a payment order.
 
-	Returns the gateway order ID and key — the client uses this to launch
-	checkout (or, in DEMO mode, just calls confirm_payment immediately).
+	Two flows depending on ``pay_later``:
+
+	  * **Pay now (default)** — gateway order is created immediately
+	    so the mobile checkout WebView can redeem it.  Booking lands
+	    Pending + Unpaid; payment confirmation flips it to
+	    Confirmed/Held when the rider completes Razorpay checkout.
+
+	  * **Pay later** — no gateway round-trip.  Booking lands Pending
+	    + ``payment_status="Cash"``.  The driver still needs to
+	    confirm (or, with ``instant_booking=1``, the booking is
+	    auto-confirmed at the seat level — but money never moves
+	    online, so we leave the rider responsible for paying the
+	    driver in cash at pickup).  The rider can ALSO upgrade to
+	    online payment at any time later by calling
+	    ``rideshare.api.payments.checkout_context`` from the booking
+	    detail screen.
+
+	Both paths are idempotent on (ride, passenger, status=Pending) so
+	a flaky network → tap-Book-twice doesn't double-charge.
 	"""
 
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw(_("Login required."), frappe.PermissionError)
+
+	pay_later_b = bool(int(pay_later or 0))
 
 	ride_doc = frappe.get_doc("Ride", ride)
 	if ride_doc.status not in ("Published",):
@@ -85,6 +105,11 @@ def create_booking(
 		booking = frappe.get_doc("Booking", existing)
 		booking.seats_booked = int(seats)
 		booking.passenger_message = message or booking.passenger_message
+		# Flip from Cash → Unpaid (or vice versa) if the rider
+		# reconsidered between attempts.  Cash bookings still flip
+		# back to Unpaid the moment they kick off a real Razorpay
+		# checkout.
+		booking.payment_status = "Cash" if pay_later_b else (booking.payment_status or "Unpaid")
 		booking.save(ignore_permissions=True)
 	else:
 		booking = frappe.new_doc("Booking")
@@ -93,9 +118,46 @@ def create_booking(
 		booking.seats_booked = int(seats)
 		booking.passenger_message = message
 		booking.status = "Pending"
-		booking.payment_status = "Unpaid"
+		booking.payment_status = "Cash" if pay_later_b else "Unpaid"
 		booking.flags.ignore_permissions = True
 		booking.insert(ignore_permissions=True)
+
+	# Pay-later: skip the gateway, return early.  The driver-side
+	# confirm flow + the rider-side cancel flow both work unchanged
+	# because they branch on Booking.status, not payment_status.
+	if pay_later_b:
+		# Auto-promote to Confirmed if the ride has instant_booking
+		# turned on AND we're in Pay Later mode — the seat is held
+		# either way, the driver opted into auto-acceptance, and
+		# making the rider wait for a Confirm tap when there's no
+		# online payment is just friction.
+		if int(ride_doc.instant_booking or 0):
+			booking.status = "Confirmed"
+			booking.save(ignore_permissions=True)
+		# Open the rider/driver chat thread so they can coordinate
+		# pickup details + cash exchange.  Idempotent.
+		try:
+			from rideshare.api.chat import start_booking_chat as _open_chat
+			_open_chat(booking.name)
+		except Exception:
+			frappe.log_error(
+				title="Could not open booking chat for pay-later booking",
+				message=frappe.get_traceback(),
+			)
+		_broadcast_booking_change(
+			booking,
+			event="confirmed" if booking.status == "Confirmed" else "pending_review",
+		)
+		frappe.db.commit()
+		return {
+			"booking": booking.name,
+			"booking_code": booking.booking_code,
+			"amount": booking.total_amount,
+			"currency": booking.currency or "INR",
+			"pay_later": True,
+			"booking_status": booking.status,
+			"payment_status": booking.payment_status,
+		}
 
 	gw = get_gateway()
 	amount_paise = rupees_to_paise(booking.total_amount)
@@ -128,6 +190,7 @@ def create_booking(
 		"order_id": order.order_id,
 		"key_id": frappe.db.get_single_value("Rideshare Settings", "razorpay_key_id") or "",
 		"is_demo": gw.name == "demo",
+		"pay_later": False,
 	}
 
 

@@ -13,29 +13,49 @@ export type Credentials = {
 
 const KEY = "rideshare.credentials.v1";
 
-async function setItem(value: string) {
-  if (await SecureStore.isAvailableAsync()) {
-    await SecureStore.setItemAsync(KEY, value, {
-      keychainAccessible: SecureStore.WHEN_UNLOCKED
-    });
-  } else {
-    await AsyncStorage.setItem(KEY, value);
+// Storage helpers wrapped so a broken native module (rare but observed
+// on some Android skins) degrades to "no persisted creds" instead of
+// crashing the whole AuthProvider on launch.
+
+async function isSecureStoreAvailable(): Promise<boolean> {
+  try {
+    return await SecureStore.isAvailableAsync();
+  } catch {
+    return false;
   }
+}
+
+async function setItem(value: string) {
+  try {
+    if (await isSecureStoreAvailable()) {
+      await SecureStore.setItemAsync(KEY, value, {
+        keychainAccessible: SecureStore.WHEN_UNLOCKED
+      });
+    } else {
+      await AsyncStorage.setItem(KEY, value);
+    }
+  } catch {/* persistence is best-effort; auth still works for the session */}
 }
 
 async function getItem(): Promise<string | null> {
-  if (await SecureStore.isAvailableAsync()) {
-    return SecureStore.getItemAsync(KEY);
+  try {
+    if (await isSecureStoreAvailable()) {
+      return await SecureStore.getItemAsync(KEY);
+    }
+    return await AsyncStorage.getItem(KEY);
+  } catch {
+    return null;
   }
-  return AsyncStorage.getItem(KEY);
 }
 
 async function removeItem() {
-  if (await SecureStore.isAvailableAsync()) {
-    await SecureStore.deleteItemAsync(KEY);
-  } else {
-    await AsyncStorage.removeItem(KEY);
-  }
+  try {
+    if (await isSecureStoreAvailable()) {
+      await SecureStore.deleteItemAsync(KEY);
+    } else {
+      await AsyncStorage.removeItem(KEY);
+    }
+  } catch {/* noop */}
 }
 
 export const credentialsStore = {

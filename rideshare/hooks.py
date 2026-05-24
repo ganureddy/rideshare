@@ -43,6 +43,7 @@ website_route_rules = [
 	# below give them clean URLs.
 	{"from_route": "/rideshare/m/oauth-callback", "to_route": "rideshare/m/oauth_callback"},
 	{"from_route": "/rideshare/m/chat", "to_route": "rideshare/m/chat"},
+	{"from_route": "/rideshare/m/checkout", "to_route": "rideshare/m/checkout"},
 	{"from_route": "/rideshare", "to_route": "index"},
 ]
 
@@ -83,6 +84,7 @@ scheduler_events = {
 	"hourly": [
 		"rideshare.tasks.hourly.expire_pending_bookings",
 		"rideshare.tasks.hourly.release_due_escrows",
+		"rideshare.api.co2.hourly_recompute_top_users",
 	],
 	"daily": [
 		"rideshare.tasks.daily.auto_complete_overdue_trips",
@@ -133,6 +135,21 @@ fixtures = [
 # Authentication hook  (used in Phase 2 to attach OTP / phone-verified gating).
 # ---------------------------------------------------------------------------
 # auth_hooks = ["rideshare.auth.validate"]
+
+# ---------------------------------------------------------------------------
+# Login / logout — chat presence integration (Raven-style).
+# Each hook runs once per session lifecycle event; both are idempotent.
+# ---------------------------------------------------------------------------
+on_login = "rideshare.api.presence.on_login"
+on_logout = "rideshare.api.presence.on_logout"
+
+# ---------------------------------------------------------------------------
+# Passive presence heartbeat — refreshes the caller's "online" marker on
+# every authenticated REST call.  Cheap (one Redis SET ... EX) and means
+# we don't need the mobile app to ping us every 30 s explicitly to stay
+# online.  See `rideshare.api.presence` for cache shape and TTL.
+# ---------------------------------------------------------------------------
+before_request = ["rideshare.api.presence.passive_heartbeat"]
 
 # ---------------------------------------------------------------------------
 # Translation files (we ship en, hi, ta starting Phase 10 — keep folder).

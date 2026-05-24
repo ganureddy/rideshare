@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -8,22 +8,34 @@ import {
   StyleSheet,
   Alert,
   Linking,
-  Animated,
-  Easing,
   Image,
   Modal
 } from "react-native";
+import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import MapView, { Marker, Polyline, UrlTile, PROVIDER_DEFAULT } from "react-native-maps";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
-import { subscribeToRide, subscribeToBookings } from "@/realtime/socket";
-import { locateAndResolve, ResolvedLocation } from "@/utils/location";
+import { ENV } from "@/env";
+import { subscribeToBookings } from "@/realtime/socket";
 import { absoluteFileUrl } from "@/utils/upload";
+import { credentialsStore } from "@/auth/store";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
+
+// NOTE: this screen used to mount a `react-native-maps` MapView and
+// trigger `expo-location` for the booker's current pin.  Both native
+// modules were the source of repeated silent crashes on Android
+// release builds — when the OS permission dialog fired on tap-to-allow,
+// the native bridge could die before any JS error boundary saw it.
+//
+// We've removed both from this booking-flow screen to make it 100%
+// crash-resistant.  The actual live trip map (driver's GPS + the A*
+// approach polyline + the OSRM road route) still lives on the
+// `Tracking` screen, which is only reachable AFTER a confirmed
+// booking.  RideDetail just shows a stylized non-native route preview
+// here, which is plenty for the "should I book this seat?" decision.
 
 type Route = RouteProp<RootStackParamList, "RideDetail">;
 type Nav = NativeStackNavigationProp<RootStackParamList, "RideDetail">;
@@ -113,40 +125,15 @@ function fmtDate(s: string) {
     return "";
   }
 }
-function fmtRelative(s?: string) {
-  if (!s) return "just now";
-  try {
-    const ms = Date.now() - new Date(s.replace(" ", "T")).getTime();
-    const sec = Math.max(0, Math.round(ms / 1000));
-    if (sec < 30) return "just now";
-    if (sec < 90) return "1 min ago";
-    const min = Math.round(sec / 60);
-    if (min < 60) return `${min} min ago`;
-    const hrs = Math.round(min / 60);
-    return `${hrs} hr ago`;
-  } catch {
-    return "moments ago";
-  }
-}
-
-type LiveLoc = {
-  lat: number;
-  lng: number;
-  heading?: number | null;
-  at?: string;
-} | null;
-
-type BookerLoc = ResolvedLocation | null;
-
 export function RideDetailScreen() {
   const { params } = useRoute<Route>();
   const nav = useNavigation<Nav>();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [liveLoc, setLiveLoc] = useState<LiveLoc>(null);
-  const [bookerLoc, setBookerLoc] = useState<BookerLoc>(null);
   const [pendingCount, setPendingCount] = useState<number>(0);
+  /** When non-null, the Razorpay WebView modal is open for this booking id. */
+  const [checkoutBooking, setCheckoutBooking] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -165,25 +152,11 @@ export function RideDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.rideId]);
 
-  // Booker / driver location auto-fetch.  Both flows benefit:
-  //   * Booker (anyone but the driver) gets a pickup pin so they can sanity
-  //     check distance to origin before confirming the seat.
-  //   * Driver sees their own current position next to the publish point
-  //     (helpful when they're already on the road and need to verify the
-  //     ride pickup is still where they think it is).
-  // The reverse-geocode hits the backend's OpenCage proxy, so the API key
-  // never ships in the bundle.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const loc = await locateAndResolve();
-      if (cancelled || !loc) return;
-      setBookerLoc(loc);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [params.rideId]);
+  // INTENTIONALLY REMOVED: the booker-location effect that called
+  // `locateAndResolve()` on mount.  That triggered the OS location
+  // permission dialog, and the native bridge kept dying on Android
+  // release builds when the user tapped "Allow".  No location pin =
+  // no permission prompt = no native crash on this screen.
 
   // For the driver, fetch the live pending-request count so the
   // "Manage bookings" button can surface an alert badge.
@@ -236,53 +209,40 @@ export function RideDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.rideId, summary?.am_i_driver]);
 
-  // Live driver location: shown to a confirmed booker (or the driver
-  // themselves) when the ride is moving.  Polls every 30s as a backup
-  // for the realtime socket.
-  useEffect(() => {
+  // INTENTIONALLY REMOVED: the live-driver-location effect that
+  // polled `tracking.get_last_location` + subscribed to ride socket
+  // events to plot the moving driver pin on the in-card map.  The
+  // map itself is gone (see top-of-file comment), so there's nothing
+  // to render the pin against.  The `Tracking` screen still does
+  // this — it's reachable from the "Track ride" CTA below as soon as
+  // the booking is Confirmed.
+
+  /**
+   * Tapping "Book a seat" opens a 3-option dialog:
+   *   • Pay now      → goes through Razorpay checkout
+   *   • Pay later    → reserves the seat now, pays the driver in cash
+   *   • Cancel       → back out
+   *
+   * Pay later just calls create_booking with pay_later=1; backend skips
+   * the gateway round-trip entirely.  The seat is held, the driver-side
+   * confirm flow runs unchanged, and the rider can still upgrade to
+   * online payment from the booking detail screen later.
+   */
+  function book() {
     if (!summary) return;
-    const canTrack =
-      summary.am_i_driver
-      || (summary.my_booking?.status === "Confirmed"
-        && (summary.status === "InProgress" || summary.status === "Published"));
-    if (!canTrack) return;
+    if (busy) return;
+    Alert.alert(
+      "How would you like to pay?",
+      "Pay online securely with UPI / Card / Netbanking, or pay the driver in cash at pickup.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Pay later (cash)", onPress: () => doBook(true) },
+        { text: "Pay now", onPress: () => doBook(false), style: "default" }
+      ]
+    );
+  }
 
-    let unsub: (() => void) | null = null;
-    let cancelled = false;
-    let pollId: ReturnType<typeof setInterval> | null = null;
-
-    async function fetchLast() {
-      try {
-        const last = await call<any>("rideshare.api.tracking.get_last_location", {
-          ride: params.rideId
-        });
-        if (cancelled) return;
-        if (last?.available) {
-          setLiveLoc({ lat: last.lat, lng: last.lng, heading: last.heading, at: last.at });
-        }
-      } catch {/* ignore */}
-    }
-
-    fetchLast();
-    pollId = setInterval(fetchLast, 30_000);
-
-    (async () => {
-      try {
-        unsub = await subscribeToRide(params.rideId, (l) => {
-          if (cancelled) return;
-          setLiveLoc({ lat: l.lat, lng: l.lng, heading: l.heading, at: l.at });
-        });
-      } catch {/* socket optional */}
-    })();
-
-    return () => {
-      cancelled = true;
-      if (pollId) clearInterval(pollId);
-      if (unsub) unsub();
-    };
-  }, [summary, params.rideId]);
-
-  async function book() {
+  async function doBook(payLater: boolean) {
     if (!summary) return;
     if (busy) return;
     setBusy(true);
@@ -295,9 +255,12 @@ export function RideDetailScreen() {
         order_id?: string;
         is_demo?: boolean;
         key_id?: string;
+        pay_later?: boolean;
+        booking_status?: string;
       }>("rideshare.api.bookings.create_booking", {
         ride: params.rideId,
-        seats: 1
+        seats: 1,
+        pay_later: payLater ? 1 : 0
       });
 
       if (!order || !order.booking) {
@@ -308,9 +271,22 @@ export function RideDetailScreen() {
         return;
       }
 
-      // DEMO mode: backend gateway auto-confirms; just call confirm_payment.
-      // For Razorpay, replace this block with the Razorpay checkout SDK
-      // (react-native-razorpay) and pass the returned signature back.
+      // Pay-later path — backend already promoted the booking to
+      // Pending (or Confirmed if instant_booking was on).  No
+      // gateway round-trip, no checkout WebView.
+      if (payLater || order.pay_later) {
+        const confirmed = order.booking_status === "Confirmed";
+        Alert.alert(
+          confirmed ? "Booked!" : "Request sent!",
+          confirmed
+            ? "Your seat is held. Pay the driver at pickup. Open chat to coordinate."
+            : "Your seat is held while the driver reviews. We'll alert you once they confirm. Pay the driver at pickup."
+        );
+        try { await load(); } catch {/* ignore */}
+        return;
+      }
+
+      // Pay-now path #1: DEMO gateway → auto-confirm with stub values.
       if (order.is_demo) {
         try {
           await call("rideshare.api.bookings.confirm_payment", {
@@ -324,22 +300,18 @@ export function RideDetailScreen() {
             "Payment confirmation failed",
             confirmErr?.message ?? "Your booking was created but payment couldn't be confirmed."
           );
-          // Don't crash — try to reload the screen so the user sees the
-          // booking row in its actual state.
           try { await load(); } catch {/* ignore */}
           return;
         }
-      } else {
-        Alert.alert(
-          "Payment required",
-          "This server isn't in DEMO mode. Open Razorpay to complete payment."
-        );
+        Alert.alert("Booked!", "We'll alert you when the driver confirms.");
+        try { await load(); } catch {/* ignore */}
         return;
       }
 
-      Alert.alert("Booked!", "We'll alert you when the driver confirms.");
-      // Refresh the screen so the chat / tracking buttons appear.
-      try { await load(); } catch {/* ignore */}
+      // Pay-now path #2: Razorpay → open the modal with the booking's
+      // order id.  The user pays inside the WebView; on success we
+      // call confirm_payment which verifies the signature server-side.
+      setCheckoutBooking(order.booking);
     } catch (e: any) {
       Alert.alert("Booking failed", e?.message ?? "Try again.");
     } finally {
@@ -410,6 +382,10 @@ export function RideDetailScreen() {
     );
   }
 
+  // INTENTIONALLY REMOVED: the A* memo that drove the teal dashed
+  // approach polyline on this screen's MapView.  The Tracking screen
+  // still owns A* — see Tracking.tsx.
+
   if (!summary) {
     return (
       <View style={[s.shell, { alignItems: "center", justifyContent: "center" }]}>
@@ -418,26 +394,26 @@ export function RideDetailScreen() {
     );
   }
 
-  const region = {
-    latitude: (summary.origin_lat + summary.destination_lat) / 2,
-    longitude: (summary.origin_lng + summary.destination_lng) / 2,
-    latitudeDelta: Math.max(Math.abs(summary.origin_lat - summary.destination_lat) * 1.6, 0.5),
-    longitudeDelta: Math.max(Math.abs(summary.origin_lng - summary.destination_lng) * 1.6, 0.5)
-  };
-
-  const initials = (summary.driver_display.name || "Driver")
+  // `driver_display` is optional on the Summary type; defend against
+  // older backend payloads by reading it through ?. and falling back.
+  const driverName = summary.driver_display?.name || "Driver";
+  const initials = driverName
     .split(" ")
-    .map((p) => p[0])
+    .map((p) => p[0] || "")
+    .filter(Boolean)
     .slice(0, 2)
     .join("")
-    .toUpperCase();
+    .toUpperCase() || "D";
 
   const alreadyBooked = !!summary.my_booking && summary.my_booking.status !== "Cancelled";
   const myBookingStatus = summary.my_booking?.status;
+  const myPaymentStatus = summary.my_booking?.payment_status;
   const isPending = myBookingStatus === "Pending";
+  // Booking exists, but payment hasn't been made AND wasn't deferred to
+  // cash — most commonly the user opened Razorpay then dismissed it.
+  // Surface a recovery CTA that re-launches the checkout WebView.
+  const isUnpaid = isPending && myPaymentStatus === "Unpaid";
   const isDriver = !!summary.am_i_driver;
-  const showBookerPin =
-    !!bookerLoc && !isDriver && summary.status !== "Completed" && summary.status !== "Cancelled";
 
   let cta: {
     label: string;
@@ -454,7 +430,13 @@ export function RideDetailScreen() {
       action: () => nav.navigate("RideBookings", { rideId: params.rideId })
     };
   } else if (alreadyBooked) {
-    if (isPending) {
+    if (isUnpaid) {
+      cta = {
+        label: "Pay now",
+        icon: "card",
+        action: () => setCheckoutBooking(summary.my_booking!.name)
+      };
+    } else if (isPending) {
       cta = {
         label: "Awaiting driver confirmation",
         icon: "hourglass",
@@ -479,91 +461,84 @@ export function RideDetailScreen() {
     cta = { label: "No seats available", action: () => {}, disabled: true };
   }
 
+  // Stylized non-native route preview that replaces the previous
+  // MapView.  Pure RN <View>s + <Text>s — never crashes, never asks
+  // for location, looks polished enough for the booking decision.
+  const distanceKm = Number(summary.distance_km);
+  const durationMin = Number(summary.duration_minutes);
+  const waypointCount = Array.isArray(summary.waypoints) ? summary.waypoints.length : 0;
+
   return (
     <SafeAreaView style={s.shell} edges={["bottom"]}>
       <ScrollView contentContainerStyle={{ paddingBottom: spacing(6) }} showsVerticalScrollIndicator={false}>
-        <View style={s.mapWrap}>
-          <MapView
-            style={{ flex: 1 }}
-            provider={PROVIDER_DEFAULT}
-            initialRegion={region}
-            pointerEvents="none"
-          >
-            {/* Free OpenStreetMap tiles — no Google Maps API key required. */}
-            <UrlTile
-              urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-              maximumZ={19}
-              flipY={false}
-              shouldReplaceMapContent={true}
-            />
-            <Marker
-              coordinate={{ latitude: summary.origin_lat, longitude: summary.origin_lng }}
-              title={summary.origin_city}
-              pinColor={colors.pickupPin}
-            />
-            <Marker
-              coordinate={{ latitude: summary.destination_lat, longitude: summary.destination_lng }}
-              title={summary.destination_city}
-              pinColor={colors.dropoffPin}
-            />
-            <Polyline
-              coordinates={[
-                { latitude: summary.origin_lat, longitude: summary.origin_lng },
-                ...summary.waypoints
-                  .filter((w) => w.lat && w.lng)
-                  .map((w) => ({ latitude: w.lat, longitude: w.lng })),
-                { latitude: summary.destination_lat, longitude: summary.destination_lng }
-              ]}
-              strokeColor={colors.text}
-              strokeWidth={3}
-            />
-            {liveLoc ? (
-              <Marker
-                coordinate={{ latitude: liveLoc.lat, longitude: liveLoc.lng }}
-                rotation={liveLoc.heading ?? 0}
-                flat
-                anchor={{ x: 0.5, y: 0.5 }}
-                title={summary.am_i_driver ? "You" : "Driver"}
-              >
-                <CarPin />
-              </Marker>
-            ) : null}
-            {showBookerPin ? (
-              <Marker
-                coordinate={{ latitude: bookerLoc!.lat, longitude: bookerLoc!.lng }}
-                title={isDriver ? "You" : "Your location"}
-                description={bookerLoc!.address ?? undefined}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <BookerPin />
-              </Marker>
-            ) : null}
-          </MapView>
-
-          {liveLoc ? (
-            <View style={s.livePill}>
-              <View style={s.liveDot} />
-              <Text style={s.liveText}>
-                Live · updated {fmtRelative(liveLoc.at)}
+        {/* Route preview — pickup → (waypoints) → destination as a
+            vertical timeline.  No native map, no permission prompt. */}
+        <View style={s.routePreview}>
+          <View style={s.routePreviewHead}>
+            <Ionicons name="navigate" size={14} color={colors.primaryText} />
+            <Text style={s.routePreviewHeadText}>Trip route</Text>
+            {Number.isFinite(distanceKm) && distanceKm > 0 ? (
+              <Text style={s.routePreviewMeta}>
+                {Math.round(distanceKm)} km
+                {Number.isFinite(durationMin) && durationMin > 0
+                  ? ` · ${Math.round(durationMin)} min`
+                  : ""}
               </Text>
+            ) : null}
+          </View>
+          <View style={s.routePreviewBody}>
+            <View style={s.routePreviewRail}>
+              <View style={[s.routePreviewDot, { backgroundColor: colors.pickupPin }]} />
+              <View style={s.routePreviewLine} />
+              {waypointCount > 0
+                ? Array.from({ length: Math.min(waypointCount, 3) }).map((_, i) => (
+                    <React.Fragment key={i}>
+                      <View style={[s.routePreviewDot, s.routePreviewWaypoint]} />
+                      <View style={s.routePreviewLine} />
+                    </React.Fragment>
+                  ))
+                : null}
+              <View
+                style={[
+                  s.routePreviewDot,
+                  s.routePreviewSquare,
+                  { backgroundColor: colors.dropoffPin }
+                ]}
+              />
             </View>
-          ) : null}
-
-          {showBookerPin ? (
-            <TouchableOpacity
-              style={s.youPill}
-              onPress={() =>
-                nav.navigate("MyLocation", { role: isDriver ? "driver" : "person" })
-              }
-              activeOpacity={0.85}
-            >
-              <Ionicons name="locate" size={11} color={colors.primaryText} />
-              <Text style={s.youPillText} numberOfLines={1}>
-                You · {bookerLoc!.area || bookerLoc!.city || bookerLoc!.address || "current location"}
-              </Text>
-              <Ionicons name="chevron-forward" size={12} color={colors.primaryText} />
-            </TouchableOpacity>
-          ) : null}
+            <View style={{ flex: 1, gap: spacing(2) }}>
+              <View>
+                <Text style={s.routePreviewCity}>{summary.origin_city || "Pickup"}</Text>
+                {summary.origin_address ? (
+                  <Text style={s.routePreviewAddr} numberOfLines={1}>
+                    {summary.origin_address}
+                  </Text>
+                ) : null}
+              </View>
+              {waypointCount > 0
+                ? (summary.waypoints || []).slice(0, 3).map((w, i) => (
+                    <Text key={i} style={s.routePreviewVia} numberOfLines={1}>
+                      via {w.city || "—"}
+                    </Text>
+                  ))
+                : null}
+              {waypointCount > 3 ? (
+                <Text style={s.routePreviewVia}>
+                  + {waypointCount - 3} more stops
+                </Text>
+              ) : null}
+              <View>
+                <Text style={s.routePreviewCity}>
+                  {summary.destination_city || "Destination"}
+                </Text>
+                {summary.destination_address ? (
+                  <Text style={s.routePreviewAddr} numberOfLines={1}>
+                    {summary.destination_address}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          </View>
         </View>
 
         {!isDriver && isPending ? (
@@ -602,7 +577,7 @@ export function RideDetailScreen() {
               <Text style={s.time}>{fmtTime(summary.departure_datetime)}</Text>
               <Text style={s.date}>{fmtDate(summary.departure_datetime)}</Text>
             </View>
-            <Text style={s.price}>₹{Math.round(summary.price_per_seat)}</Text>
+            <Text style={s.price}>₹{Math.round(Number(summary.price_per_seat) || 0)}</Text>
           </View>
 
           <View style={s.routeRow}>
@@ -625,11 +600,11 @@ export function RideDetailScreen() {
           </View>
 
           <View style={s.metaRow}>
-            <Meta icon="speedometer-outline" text={`${summary.distance_km} km`} />
-            <Meta icon="time-outline" text={`${summary.duration_minutes} min`} />
+            <Meta icon="speedometer-outline" text={`${Number(summary.distance_km) || 0} km`} />
+            <Meta icon="time-outline" text={`${Number(summary.duration_minutes) || 0} min`} />
             <Meta
               icon="people-outline"
-              text={`${summary.seats_available}/${summary.seats_total} seat${summary.seats_total === 1 ? "" : "s"}`}
+              text={`${Number(summary.seats_available) || 0}/${Number(summary.seats_total) || 0} seat${Number(summary.seats_total) === 1 ? "" : "s"}`}
             />
           </View>
 
@@ -645,7 +620,8 @@ export function RideDetailScreen() {
           <Text style={s.section}>{summary.am_i_driver ? "Publisher (you)" : "Publisher"}</Text>
           <View style={s.driverRow}>
             {(() => {
-              const portrait = absoluteFileUrl(summary.driver_display.image);
+              const dd = summary.driver_display;
+              const portrait = dd ? absoluteFileUrl(dd.image) : null;
               return portrait ? (
                 <Image source={{ uri: portrait }} style={s.avatarImg} />
               ) : (
@@ -654,21 +630,26 @@ export function RideDetailScreen() {
             })()}
             <View style={{ flex: 1 }}>
               <Text style={s.driverName}>
-                {summary.driver_display.name || "Driver"}
-                {summary.driver_display.is_verified ? "  ✓ Verified" : ""}
+                {driverName}
+                {summary.driver_display?.is_verified ? "  ✓ Verified" : ""}
               </Text>
               <Text style={s.driverMeta}>
-                {summary.driver_display.rating_count
-                  ? `★ ${summary.driver_display.rating_avg?.toFixed(1)} (${summary.driver_display.rating_count} reviews)`
-                  : "New driver"}
-                {summary.driver_display.total_trips
-                  ? ` · ${summary.driver_display.total_trips} trips`
-                  : ""}
+                {(() => {
+                  const ra = Number(summary.driver_display?.rating_avg);
+                  const rc = Number(summary.driver_display?.rating_count);
+                  const tt = Number(summary.driver_display?.total_trips);
+                  const ratingPart =
+                    Number.isFinite(rc) && rc > 0
+                      ? `★ ${(Number.isFinite(ra) ? ra : 0).toFixed(1)} (${rc} reviews)`
+                      : "New driver";
+                  const tripsPart = Number.isFinite(tt) && tt > 0 ? ` · ${tt} trips` : "";
+                  return `${ratingPart}${tripsPart}`;
+                })()}
               </Text>
-              {summary.driver_display.bio ? (
+              {summary.driver_display?.bio ? (
                 <Text style={s.bio} numberOfLines={3}>{summary.driver_display.bio}</Text>
               ) : null}
-              {summary.driver_display.has_license ? (
+              {summary.driver_display?.has_license ? (
                 <View style={s.miniRow}>
                   <Ionicons name="document-text-outline" size={12} color={colors.soft} />
                   <Text style={s.miniText}>
@@ -812,7 +793,7 @@ export function RideDetailScreen() {
 
       <View style={s.cta}>
         <View>
-          <Text style={s.ctaPrice}>₹{Math.round(summary.price_per_seat)}</Text>
+          <Text style={s.ctaPrice}>₹{Math.round(Number(summary.price_per_seat) || 0)}</Text>
           <Text style={s.ctaPriceSub}>per seat</Text>
         </View>
         <TouchableOpacity
@@ -840,7 +821,172 @@ export function RideDetailScreen() {
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Razorpay Standard Checkout — opens as a full-screen modal
+          when `book()` lands a non-DEMO order.  The Jinja page does
+          the heavy lifting (Razorpay SDK, UPI/cards/netbanking); on
+          success the WebView postMessages back to this RN host and
+          we call confirm_payment with the verified signature. */}
+      <CheckoutModal
+        bookingId={checkoutBooking}
+        onClose={() => setCheckoutBooking(null)}
+        onSuccess={async (payload) => {
+          setCheckoutBooking(null);
+          try {
+            await call("rideshare.api.bookings.confirm_payment", {
+              booking: payload.booking,
+              gateway_order_id: payload.razorpay_order_id,
+              gateway_payment_id: payload.razorpay_payment_id,
+              gateway_signature: payload.razorpay_signature
+            });
+            Alert.alert("Booked!", "We'll alert you when the driver confirms.");
+            try { await load(); } catch {/* ignore */}
+          } catch (e: any) {
+            Alert.alert(
+              "Payment confirmation failed",
+              e?.message ?? "We couldn't verify the payment signature. If money was deducted, our webhook will reconcile within a minute."
+            );
+            try { await load(); } catch {/* ignore */}
+          }
+        }}
+        onFailure={(reason) => {
+          setCheckoutBooking(null);
+          if (reason && reason !== "user_cancelled" && reason !== "modal_dismissed") {
+            Alert.alert("Payment failed", reason);
+          }
+        }}
+      />
     </SafeAreaView>
+  );
+}
+
+/**
+ * Full-screen modal that hosts the Razorpay Standard Checkout WebView
+ * and translates its postMessage events back into RN callbacks.
+ *
+ * The page itself (`/rideshare/m/checkout?booking=...`) renders inside
+ * the WebView; auth comes from the cookie session our login flow set
+ * up.  As a defensive belt-and-braces measure we ALSO append the
+ * caller's API token to the URL — Frappe accepts either path, and on
+ * some Android skins the cookie jar is cleared between WebView
+ * instances.
+ */
+function CheckoutModal({
+  bookingId,
+  onClose,
+  onSuccess,
+  onFailure
+}: {
+  bookingId: string | null;
+  onClose: () => void;
+  onSuccess: (payload: {
+    booking: string;
+    razorpay_order_id: string;
+    razorpay_payment_id: string;
+    razorpay_signature: string;
+  }) => void;
+  onFailure: (reason: string) => void;
+}) {
+  const [uri, setUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!bookingId) {
+      setUri(null);
+      return;
+    }
+    (async () => {
+      const creds = await credentialsStore.get();
+      const base = ENV.apiBaseUrl.replace(/\/$/, "");
+      const params = new URLSearchParams({ booking: bookingId });
+      // Auth fallback: if the WebView's cookie jar is empty on this
+      // device we fall back to api_key/secret in the URL.  These never
+      // leave the device — the WebView cancels redirects.
+      if (creds?.apiKey && creds?.apiSecret) {
+        params.set("api_key", creds.apiKey);
+        params.set("api_secret", creds.apiSecret);
+      }
+      if (active) {
+        setUri(`${base}/rideshare/m/checkout?${params.toString()}`);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [bookingId]);
+
+  if (!bookingId) return null;
+  return (
+    <Modal visible animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={["top"]}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border
+          }}
+        >
+          <TouchableOpacity onPress={() => onFailure("user_cancelled")} hitSlop={12}>
+            <Ionicons name="chevron-back" size={26} color={colors.text} />
+          </TouchableOpacity>
+          <Text
+            style={{
+              flex: 1,
+              textAlign: "center",
+              fontSize: 15,
+              fontWeight: "800",
+              color: colors.text,
+              marginRight: 26
+            }}
+            numberOfLines={1}
+          >
+            Secure payment
+          </Text>
+        </View>
+        {uri ? (
+          <WebView
+            source={{ uri }}
+            originWhitelist={["*"]}
+            javaScriptEnabled
+            domStorageEnabled
+            sharedCookiesEnabled
+            thirdPartyCookiesEnabled
+            startInLoadingState
+            onMessage={(e) => {
+              try {
+                const data = JSON.parse(e.nativeEvent.data || "{}");
+                if (data.type === "payment-success") {
+                  onSuccess({
+                    booking: data.booking,
+                    razorpay_order_id: data.razorpay_order_id,
+                    razorpay_payment_id: data.razorpay_payment_id,
+                    razorpay_signature: data.razorpay_signature
+                  });
+                } else if (data.type === "payment-failed") {
+                  onFailure(data.reason || "payment_failed");
+                } else if (data.type === "payment-cancelled") {
+                  onFailure(data.reason || "user_cancelled");
+                }
+                // payment-ready fires once the page is mounted;
+                // nothing to do.
+              } catch {/* ignore malformed messages */}
+            }}
+            renderLoading={() => (
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                <ActivityIndicator color={colors.text} />
+              </View>
+            )}
+          />
+        ) : (
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+            <ActivityIndicator color={colors.text} />
+          </View>
+        )}
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -941,46 +1087,6 @@ function CarPhotoGallery({ photos }: { photos: string[] }) {
   );
 }
 
-function BookerPin() {
-  return (
-    <View style={s.bookerWrap}>
-      <View style={s.bookerOuter} />
-      <View style={s.bookerInner}>
-        <Ionicons name="person" size={12} color={colors.primaryText} />
-      </View>
-    </View>
-  );
-}
-
-function CarPin() {
-  const pulse = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.timing(pulse, {
-        toValue: 1,
-        duration: 1500,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true
-      })
-    );
-    pulse.setValue(0);
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-
-  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.6] });
-  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
-
-  return (
-    <View style={s.markerWrap}>
-      <Animated.View style={[s.pulse, { transform: [{ scale }], opacity }]} />
-      <View style={s.carDot}>
-        <Ionicons name="car-sport" size={18} color={colors.primaryText} />
-      </View>
-    </View>
-  );
-}
-
 function PrefPill({
   icon,
   label,
@@ -1009,60 +1115,88 @@ function PrefPill({
 
 const s = StyleSheet.create({
   shell: { flex: 1, backgroundColor: colors.bgAlt },
-  mapWrap: { height: 220, backgroundColor: colors.bgAlt, position: "relative" },
 
-  livePill: {
-    position: "absolute",
-    top: 12,
-    left: 12,
+  // Stylized non-native route preview that replaced the MapView block.
+  routePreview: {
+    backgroundColor: colors.card,
+    marginHorizontal: spacing(4),
+    marginTop: spacing(3),
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: "hidden"
+  },
+  routePreviewHead: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "rgba(0,0,0,0.78)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999
+    backgroundColor: colors.text,
+    paddingHorizontal: spacing(3),
+    paddingVertical: spacing(2)
   },
-  liveDot: {
+  routePreviewHeadText: {
+    color: colors.primaryText,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+    textTransform: "uppercase"
+  },
+  routePreviewMeta: {
+    color: colors.primaryText,
+    fontSize: 11,
+    fontWeight: "600",
+    marginLeft: "auto",
+    opacity: 0.85
+  },
+  routePreviewBody: {
+    flexDirection: "row",
+    paddingHorizontal: spacing(4),
+    paddingVertical: spacing(3),
+    gap: spacing(3)
+  },
+  routePreviewRail: {
+    width: 12,
+    alignItems: "center",
+    paddingTop: 2,
+    paddingBottom: 2
+  },
+  routePreviewDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.text
+  },
+  routePreviewSquare: {
+    borderRadius: 2
+  },
+  routePreviewWaypoint: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.success
+    backgroundColor: colors.borderStrong
   },
-  liveText: { color: "#fff", fontSize: 11, fontWeight: "700" },
-
-  youPill: {
-    position: "absolute",
-    bottom: 12,
-    left: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    maxWidth: "80%"
+  routePreviewLine: {
+    flex: 1,
+    minHeight: 18,
+    width: 2,
+    backgroundColor: colors.borderStrong,
+    marginVertical: 2
   },
-  youPillText: { color: colors.primaryText, fontSize: 11, fontWeight: "700" },
-
-  bookerWrap: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
-  bookerOuter: {
-    position: "absolute",
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.18)"
+  routePreviewCity: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: colors.text,
+    letterSpacing: -0.2
   },
-  bookerInner: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#fff"
+  routePreviewAddr: {
+    fontSize: 12,
+    color: colors.soft,
+    marginTop: 2
+  },
+  routePreviewVia: {
+    fontSize: 12,
+    color: colors.soft,
+    fontStyle: "italic"
   },
 
   statusCard: {
@@ -1111,25 +1245,6 @@ const s = StyleSheet.create({
   },
   cancelLinkText: { color: colors.danger, fontSize: 13, fontWeight: "700" },
 
-  markerWrap: { width: 56, height: 56, alignItems: "center", justifyContent: "center" },
-  pulse: {
-    position: "absolute",
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.success
-  },
-  carDot: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: colors.text,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "#fff",
-    ...shadow.floating
-  },
   card: {
     marginHorizontal: spacing(4),
     marginTop: spacing(3),

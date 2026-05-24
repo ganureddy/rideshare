@@ -13,12 +13,6 @@
       "backgroundColor": "#1976D2"
     },
     "primaryColor": "#1976D2",
-    "notification": {
-      "icon": "./assets/adaptive-icon.png",
-      "color": "#1976D2",
-      "androidMode": "default",
-      "iosDisplayInForeground": true
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -74,8 +68,8 @@
         "expo-build-properties",
         {
           "android": {
-            "enableMinifyInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableMinifyInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false,
             "buildArchs": [
               "arm64-v8a",
               "armeabi-v7a"

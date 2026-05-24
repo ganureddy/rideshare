@@ -446,12 +446,16 @@ function BookingCard({
   actions?: React.ReactNode;
   muted?: boolean;
 }) {
-  const initials = (b.passenger_name || "Rider")
-    .split(" ")
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  const displayName = b.passenger_name || "Rider";
+  const initials =
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((p) => (p && p[0]) || "")
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "R";
 
   return (
     <View style={[s.card, shadow.card, muted && { opacity: 0.65 }]}>
@@ -460,10 +464,10 @@ function BookingCard({
           <Text style={s.avatarText}>{initials}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={s.passengerName}>{b.passenger_name}</Text>
+          <Text style={s.passengerName}>{displayName}</Text>
           <Text style={s.passengerMeta}>
-            {b.seats_booked} seat{b.seats_booked === 1 ? "" : "s"} · ₹{Math.round(b.total_amount)} ·{" "}
-            {b.booking_code}
+            {Number(b.seats_booked) || 0} seat{Number(b.seats_booked) === 1 ? "" : "s"} · ₹{Math.round(Number(b.total_amount) || 0)} ·{" "}
+            {b.booking_code || "—"}
           </Text>
         </View>
         <StatusChip status={b.status} />

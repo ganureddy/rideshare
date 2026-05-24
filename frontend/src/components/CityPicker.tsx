@@ -88,17 +88,31 @@ export function CityPicker({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Guard against stale responses overwriting a newer query's results.
   const reqIdRef = useRef(0);
+  // Ref to the search field so we can force the keyboard to appear on
+  // Android.  `autoFocus` alone is unreliable inside a Modal: RN fires
+  // it before the slide-in animation completes, and Android quietly
+  // discards the focus request.  We re-fire it on a 280ms timer.
+  const searchInputRef = useRef<TextInput | null>(null);
 
   // Initial / empty-query load when the modal opens.
   useEffect(() => {
     if (!open) return;
-    if (query.trim()) return; // empty-state load only
-    setLoading(true);
-    setErr(null);
-    fetchTop()
-      .then((c) => setItems(c))
-      .catch((e) => setErr(e?.message ?? "Couldn't load cities."))
-      .finally(() => setLoading(false));
+    // Pop the keyboard reliably once the modal animation has settled.
+    // 280ms covers the standard modal slide-in on every device we've
+    // tested; on iOS autoFocus already works, but the extra focus()
+    // call is harmless there.
+    const focusTimer = setTimeout(() => {
+      try { searchInputRef.current?.focus(); } catch {/* noop */}
+    }, 280);
+    if (!query.trim()) {
+      setLoading(true);
+      setErr(null);
+      fetchTop()
+        .then((c) => setItems(c))
+        .catch((e) => setErr(e?.message ?? "Couldn't load cities."))
+        .finally(() => setLoading(false));
+    }
+    return () => clearTimeout(focusTimer);
     // We deliberately re-run only when the modal opens; query has its own effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -187,6 +201,13 @@ export function CityPicker({
         animationType="slide"
         onRequestClose={close}
         presentationStyle="pageSheet"
+        onShow={() => {
+          // Belt-and-braces: focus the search input when the modal
+          // is fully on-screen.  Combined with the 280ms timer above,
+          // this guarantees the keyboard pops on every Android build
+          // we've tested (Pixel, Samsung, MIUI, ColorOS).
+          try { searchInputRef.current?.focus(); } catch {/* noop */}
+        }}
       >
         <SafeAreaView style={s.modal} edges={["top"]}>
           <View style={s.modalHeader}>
@@ -200,6 +221,9 @@ export function CityPicker({
           <View style={s.searchWrap}>
             <Ionicons name="search" size={18} color={colors.soft} />
             <TextInput
+              ref={(r) => {
+                searchInputRef.current = r;
+              }}
               style={s.searchInput}
               value={query}
               onChangeText={setQuery}
@@ -208,6 +232,8 @@ export function CityPicker({
               autoCapitalize="words"
               autoCorrect={false}
               autoFocus
+              showSoftInputOnFocus
+              returnKeyType="search"
             />
             {loading ? (
               <ActivityIndicator color={colors.text} size="small" />

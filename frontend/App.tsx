@@ -9,11 +9,35 @@ import {
 import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { RootNavigator, RootStackParamList } from "@/navigation/RootNavigator";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   attachNotificationHandlers,
   navIntentFor,
   registerPushTokenForUser
 } from "@/notifications/push";
+
+// Last-resort guard for unhandled promise rejections (a common cause of
+// silent app closures on Android release builds).  We log the error to
+// the console — the ErrorBoundary further down handles render errors
+// the React way.
+if (typeof globalThis !== "undefined") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as any;
+  if (typeof g.HermesInternal !== "undefined" || typeof g.process !== "undefined") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const tracking = require("promise/setimmediate/rejection-tracking");
+      tracking.enable({
+        allRejections: true,
+        onUnhandled: (id: number, error: unknown) => {
+          // eslint-disable-next-line no-console
+          console.error("[unhandledRejection]", id, error);
+        },
+        onHandled: () => {/* noop */}
+      });
+    } catch {/* runtime doesn't expose the polyfill — fine */}
+  }
+}
 
 const linking = {
   prefixes: [Linking.createURL("/"), "rideshare://"],
@@ -83,11 +107,13 @@ function Root() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <StatusBar style="dark" backgroundColor="#FFFFFF" />
-        <Root />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <ErrorBoundary label="App root">
+      <SafeAreaProvider>
+        <AuthProvider>
+          <StatusBar style="dark" backgroundColor="#FFFFFF" />
+          <Root />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }

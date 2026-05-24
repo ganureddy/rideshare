@@ -20,15 +20,25 @@ let _lastUser: string | null = null;
 
 // Foreground behaviour — show a banner + play a sound + bump the badge
 // even while the app is open.  WhatsApp-style.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true
-  })
-});
+//
+// This call runs at *module load time*, so if the native side of
+// expo-notifications is missing / mis-bridged on a device, an
+// unwrapped throw here would kill the JS bundle before App.tsx even
+// renders.  Wrap defensively so a busted notifications module degrades
+// to "no foreground banner" instead of "the app won't open".
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true
+    })
+  });
+} catch {
+  /* noop — best-effort */
+}
 
 /**
  * Define Android notification channels for each push category.  iOS
@@ -181,23 +191,38 @@ export function attachNotificationHandlers(opts: {
   /** Optional: called on every foreground notification (e.g. for an in-app toast). */
   onForeground?: (payload: PushPayload, title?: string, body?: string) => void;
 }): () => void {
-  const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
-    const data = (response.notification.request.content.data || {}) as PushPayload;
-    opts.onTap(data);
-  });
-  const fgSub = opts.onForeground
-    ? Notifications.addNotificationReceivedListener((notif) => {
-        const c = notif.request.content;
-        opts.onForeground!(
-          (c.data || {}) as PushPayload,
-          c.title || undefined,
-          c.body || undefined
-        );
-      })
-    : null;
+  // Listener registration can throw on devices where the native
+  // notifications module is broken or missing.  Don't let that take
+  // down App.tsx — fall back to a no-op cleanup.
+  let tapSub: { remove: () => void } | null = null;
+  let fgSub: { remove: () => void } | null = null;
+  try {
+    tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      try {
+        const data = (response.notification.request.content.data || {}) as PushPayload;
+        opts.onTap(data);
+      } catch {/* ignore tap-handler errors */}
+    });
+  } catch {/* registration failed — push taps just won't fire */}
+
+  if (opts.onForeground) {
+    try {
+      fgSub = Notifications.addNotificationReceivedListener((notif) => {
+        try {
+          const c = notif.request.content;
+          opts.onForeground!(
+            (c.data || {}) as PushPayload,
+            c.title || undefined,
+            c.body || undefined
+          );
+        } catch {/* ignore */}
+      });
+    } catch {/* registration failed */}
+  }
+
   return () => {
-    tapSub.remove();
-    if (fgSub) fgSub.remove();
+    try { tapSub?.remove(); } catch {/* noop */}
+    try { fgSub?.remove(); } catch {/* noop */}
   };
 }
 

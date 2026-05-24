@@ -18,7 +18,36 @@ import { ChatThreadScreen } from "@/screens/ChatThread";
 import { RideBookingsScreen } from "@/screens/RideBookings";
 import { MyLocationScreen } from "@/screens/MyLocation";
 import { EditProfileScreen } from "@/screens/EditProfile";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { colors } from "@/theme";
+
+// Wraps a screen component in an ErrorBoundary so a crash on, say,
+// RideDetail surfaces a red diagnostic screen INSIDE the navigator
+// rather than killing the whole app.  React Navigation will re-mount
+// the inner component on retry.
+function withBoundary<P>(Component: React.ComponentType<P>, label: string) {
+  const Wrapped = (props: P) => (
+    <ErrorBoundary label={label}>
+      <Component {...(props as any)} />
+    </ErrorBoundary>
+  );
+  Wrapped.displayName = `Boundary(${label})`;
+  return Wrapped;
+}
+
+const SafeLoginScreen        = withBoundary(LoginScreen,        "Login");
+const SafeSearchScreen       = withBoundary(SearchScreen,       "Search");
+const SafeSearchResultsScreen = withBoundary(SearchResultsScreen, "SearchResults");
+const SafeRideDetailScreen   = withBoundary(RideDetailScreen,   "RideDetail");
+const SafePublishScreen      = withBoundary(PublishScreen,      "Publish");
+const SafeTripsScreen        = withBoundary(TripsScreen,        "Trips");
+const SafeProfileScreen      = withBoundary(ProfileScreen,      "Profile");
+const SafeTrackingScreen     = withBoundary(TrackingScreen,     "Tracking");
+const SafeChatListScreen     = withBoundary(ChatListScreen,     "Chats");
+const SafeChatThreadScreen   = withBoundary(ChatThreadScreen,   "ChatThread");
+const SafeRideBookingsScreen = withBoundary(RideBookingsScreen, "RideBookings");
+const SafeMyLocationScreen   = withBoundary(MyLocationScreen,   "MyLocation");
+const SafeEditProfileScreen  = withBoundary(EditProfileScreen,  "EditProfile");
 
 export type RideSort = "departure" | "price_asc" | "price_desc" | "duration";
 
@@ -102,15 +131,15 @@ function Tabs() {
         }
       })}
     >
-      <Tab.Screen name="Search" component={SearchScreen} options={{ title: "Search" }} />
+      <Tab.Screen name="Search" component={SafeSearchScreen} options={{ title: "Search" }} />
       <Tab.Screen
         name="Publish"
-        component={PublishScreen}
+        component={SafePublishScreen}
         options={{ title: "Publish Ride", tabBarLabelStyle: { fontSize: 10, fontWeight: "700" } }}
       />
-      <Tab.Screen name="Trips" component={TripsScreen} options={{ title: "Trips" }} />
-      <Tab.Screen name="Chats" component={ChatListScreen} options={{ title: "Chats" }} />
-      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: "Profile" }} />
+      <Tab.Screen name="Trips" component={SafeTripsScreen} options={{ title: "Trips" }} />
+      <Tab.Screen name="Chats" component={SafeChatListScreen} options={{ title: "Chats" }} />
+      <Tab.Screen name="Profile" component={SafeProfileScreen} options={{ title: "Profile" }} />
     </Tab.Navigator>
   );
 }
@@ -128,31 +157,31 @@ export function RootNavigator() {
       }}
     >
       {!user ? (
-        <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
+        <Stack.Screen name="Login" component={SafeLoginScreen} options={{ headerShown: false }} />
       ) : (
         <>
           <Stack.Screen name="Tabs" component={Tabs} options={{ headerShown: false }} />
-          <Stack.Screen name="SearchResults" component={SearchResultsScreen} options={{ title: "Rides" }} />
-          <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "Ride" }} />
+          <Stack.Screen name="SearchResults" component={SafeSearchResultsScreen} options={{ title: "Rides" }} />
+          <Stack.Screen name="RideDetail" component={SafeRideDetailScreen} options={{ title: "Ride" }} />
           <Stack.Screen
             name="RideBookings"
-            component={RideBookingsScreen}
+            component={SafeRideBookingsScreen}
             options={{ headerShown: false }}
           />
-          <Stack.Screen name="Tracking" component={TrackingScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="Tracking" component={SafeTrackingScreen} options={{ headerShown: false }} />
           <Stack.Screen
             name="ChatThread"
-            component={ChatThreadScreen}
+            component={SafeChatThreadScreen}
             options={{ headerShown: false }}
           />
           <Stack.Screen
             name="MyLocation"
-            component={MyLocationScreen}
+            component={SafeMyLocationScreen}
             options={{ headerShown: false }}
           />
           <Stack.Screen
             name="EditProfile"
-            component={EditProfileScreen}
+            component={SafeEditProfileScreen}
             options={{ headerShown: false }}
           />
         </>

@@ -1,0 +1,52 @@
+{
+ "actions": [],
+ "autoname": "format:RR-{########}",
+ "creation": "2026-05-23 02:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "booking",
+  "ride",
+  "reviewer",
+  "ratee",
+  "direction",
+  "column_break_1",
+  "rating",
+  "submitted_at",
+  "tags",
+  "comment_section",
+  "comment"
+ ],
+ "fields": [
+  {"fieldname": "booking", "fieldtype": "Link", "label": "Booking", "options": "Booking", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "The booking this review is associated with — one review per (booking, direction)."},
+  {"fieldname": "ride", "fieldtype": "Link", "label": "Ride", "options": "Ride", "reqd": 1, "in_standard_filter": 1, "description": "Denormalised from Booking for fast aggregate queries."},
+  {"fieldname": "reviewer", "fieldtype": "Link", "label": "Reviewer", "options": "User", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "ratee", "fieldtype": "Link", "label": "Reviewee", "options": "User", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "description": "User being rated. Driver when direction=passenger_to_driver, vice versa."},
+  {"fieldname": "direction", "fieldtype": "Select", "label": "Direction", "options": "passenger_to_driver\ndriver_to_passenger", "reqd": 1, "in_standard_filter": 1, "description": "Who is rating whom — drives the User-side aggregate counter."},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
+  {"fieldname": "rating", "fieldtype": "Int", "label": "Rating", "reqd": 1, "in_list_view": 1, "non_negative": 1, "description": "1-5 stars. Validated in the controller."},
+  {"fieldname": "submitted_at", "fieldtype": "Datetime", "label": "Submitted At", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "tags", "fieldtype": "Small Text", "label": "Tags", "description": "Comma-separated quick-tags: punctual, polite, clean_car, safe_driving, late, cancelled, etc."},
+  {"fieldname": "comment_section", "fieldtype": "Section Break", "label": "Comment"},
+  {"fieldname": "comment", "fieldtype": "Long Text", "label": "Comment"}
+ ],
+ "links": [],
+ "modified": "2026-05-23 02:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Rideshare Reviews",
+ "name": "Ride Review",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1},
+  {"create": 1, "read": 1, "role": "Rideshare Admin", "write": 1, "report": 1, "delete": 1, "print": 1, "share": 1},
+  {"read": 1, "role": "Driver", "create": 1},
+  {"read": 1, "role": "Verified Driver", "create": 1},
+  {"read": 1, "role": "Rider", "create": 1}
+ ],
+ "search_fields": "booking,reviewer,ratee,rating",
+ "sort_field": "submitted_at",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

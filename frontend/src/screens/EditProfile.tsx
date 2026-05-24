@@ -54,13 +54,14 @@ export function EditProfileScreen() {
   }, []);
 
   const isDriver = !!(profile?.is_driver || profile?.is_verified_driver);
-  const initials = (fullName || "U")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
+  const initials =
+    (fullName || "U")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((p) => p[0] || "")
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "U";
 
   async function pickPhoto(source: "library" | "camera") {
     setPhotoBusy(true);

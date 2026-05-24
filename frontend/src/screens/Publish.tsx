@@ -156,11 +156,15 @@ export function PublishScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const loc = await locateAndResolve();
-      if (cancelled) return;
-      setLocating(false);
-      if (!loc) return;
-      setAutoLoc(loc);
+      try {
+        const loc = await locateAndResolve();
+        if (cancelled) return;
+        setLocating(false);
+        if (!loc) return;
+        setAutoLoc(loc);
+      } catch {
+        if (!cancelled) setLocating(false);
+      }
     })();
     return () => {
       cancelled = true;
