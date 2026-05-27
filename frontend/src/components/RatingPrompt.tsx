@@ -17,10 +17,10 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  StyleSheet,
-  Alert
+  StyleSheet
 } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
+import { alert } from "@/components/AlertHost";
 import { call } from "@/api/client";
 import { colors, radii, spacing, shadow } from "@/theme";
 
@@ -101,7 +101,7 @@ export function RatingPromptModal({
 
   const submit = async () => {
     if (rating < 1) {
-      Alert.alert("Pick a rating", "Tap a star to rate this ride.");
+      alert("Pick a rating", "Tap a star to rate this ride.");
       return;
     }
     setBusy(true);
@@ -114,7 +114,7 @@ export function RatingPromptModal({
       });
       onDone();
     } catch (e: any) {
-      Alert.alert("Couldn't submit", e?.message ?? "Try again.");
+      alert("Couldn't submit", e?.message ?? "Try again.");
     } finally {
       setBusy(false);
     }

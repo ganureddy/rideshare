@@ -20,11 +20,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   RefreshControl,
   Linking
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useFocusEffect, useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -105,7 +105,7 @@ export function RideBookingsScreen() {
       });
       if (mountedRef.current) setData(res);
     } catch (e: any) {
-      Alert.alert("Couldn't load bookings", e?.message ?? "Try again.");
+      alert("Couldn't load bookings", e?.message ?? "Try again.");
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
@@ -159,14 +159,14 @@ export function RideBookingsScreen() {
       });
       await load();
     } catch (e: any) {
-      Alert.alert("Couldn't confirm", e?.message ?? "Try again.");
+      alert("Couldn't confirm", e?.message ?? "Try again.");
     } finally {
       setActing(null);
     }
   }
 
   function decline(b: BookingRow) {
-    Alert.alert(
+    alert(
       "Decline this request?",
       `${b.passenger_name} will be refunded in full.`,
       [
@@ -183,7 +183,7 @@ export function RideBookingsScreen() {
               });
               await load();
             } catch (e: any) {
-              Alert.alert("Couldn't decline", e?.message ?? "Try again.");
+              alert("Couldn't decline", e?.message ?? "Try again.");
             } finally {
               setActing(null);
             }
@@ -194,7 +194,7 @@ export function RideBookingsScreen() {
   }
 
   function remove(b: BookingRow) {
-    Alert.alert(
+    alert(
       "Remove this rider?",
       `${b.passenger_name} will be refunded in full and freed from the ride.`,
       [
@@ -211,7 +211,7 @@ export function RideBookingsScreen() {
               });
               await load();
             } catch (e: any) {
-              Alert.alert("Couldn't remove", e?.message ?? "Try again.");
+              alert("Couldn't remove", e?.message ?? "Try again.");
             } finally {
               setActing(null);
             }
@@ -229,14 +229,14 @@ export function RideBookingsScreen() {
       );
       nav.navigate("ChatThread", { threadId: res.thread });
     } catch (e: any) {
-      Alert.alert("Couldn't open chat", e?.message ?? "Try again.");
+      alert("Couldn't open chat", e?.message ?? "Try again.");
     }
   }
 
   function callRider(b: BookingRow) {
     if (!b.passenger_mobile) return;
     Linking.openURL(`tel:${b.passenger_mobile}`).catch(() =>
-      Alert.alert("Couldn't open dialler", b.passenger_mobile || "")
+      alert("Couldn't open dialler", b.passenger_mobile || "")
     );
   }
 

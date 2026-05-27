@@ -4,13 +4,13 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   ScrollView,
   ActivityIndicator,
   Linking,
   Image
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -68,7 +68,7 @@ export function ProfileScreen() {
       );
       nav.navigate("ChatThread", { threadId: res.thread });
     } catch (e: any) {
-      Alert.alert("Couldn't open helpline", e?.message ?? "Try again.");
+      alert("Couldn't open helpline", e?.message ?? "Try again.");
     } finally {
       setOpening(false);
     }
@@ -76,7 +76,7 @@ export function ProfileScreen() {
 
   function callHelpline() {
     Linking.openURL(`tel:${HELPLINE_NUMBER}`).catch(() =>
-      Alert.alert("Couldn't open dialler", HELPLINE_NUMBER)
+      alert("Couldn't open dialler", HELPLINE_NUMBER)
     );
   }
 
@@ -201,7 +201,7 @@ export function ProfileScreen() {
         <TouchableOpacity
           style={s.logoutBtn}
           onPress={() =>
-            Alert.alert("Log out?", "You can sign in again with the same number.", [
+            alert("Log out?", "You can sign in again with the same number.", [
               { text: "Cancel", style: "cancel" },
               { text: "Log out", style: "destructive", onPress: signOut }
             ])

@@ -8,16 +8,19 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert,
   ScrollView,
   Image
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/auth/AuthContext";
 import { colors, radii, spacing } from "@/theme";
 
-type Step = "phone" | "name";
+type Step = "phone" | "name" | "email";
+
+// Practical email regex — gates the Continue button.  Backend re-validates.
+const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 export function LoginScreen() {
   const { signInWithPhone, signInWithGoogle, checkPhone } = useAuth();
@@ -25,6 +28,7 @@ export function LoginScreen() {
   const [step, setStep] = useState<Step>("phone");
   const [mobile, setMobile] = useState("");
   const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
   const [normalisedMobile, setNormalisedMobile] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyGoogle, setBusyGoogle] = useState(false);
@@ -36,7 +40,7 @@ export function LoginScreen() {
   async function continueWithPhone() {
     const phone = digitsOnly();
     if (phone.length !== 10) {
-      Alert.alert("Invalid number", "Enter a valid 10-digit mobile number.");
+      alert("Invalid number", "Enter a valid 10-digit mobile number.");
       return;
     }
     setBusy(true);
@@ -52,23 +56,52 @@ export function LoginScreen() {
         setStep("name");
       }
     } catch (e: any) {
-      Alert.alert("Couldn't continue", e?.message ?? "Try again.");
+      alert("Couldn't continue", e?.message ?? "Try again.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function finishSignup() {
+  // Name is collected first; we then move to an optional email step.
+  // We don't call the backend yet — only the final "create account"
+  // tap (after the email step, with or without an address) hits
+  // login_with_phone, so we don't create a User row the user might
+  // bail on.
+  function advanceFromName() {
     const name = fullName.trim();
     if (!name || name.length < 2) {
-      Alert.alert("What should we call you?", "Enter your name to finish setting up your account.");
+      alert("What should we call you?", "Enter your name to finish setting up your account.");
       return;
+    }
+    setStep("email");
+  }
+
+  async function finishSignup(opts: { withEmail: boolean }) {
+    const name = fullName.trim();
+    if (!name || name.length < 2) {
+      alert("What should we call you?", "Enter your name to finish setting up your account.", undefined, { kind: "warn" });
+      setStep("name");
+      return;
+    }
+    let emailToSend: string | null = null;
+    if (opts.withEmail) {
+      const e = email.trim().toLowerCase();
+      if (e && !EMAIL_RE.test(e)) {
+        alert(
+          "Check your email",
+          "That doesn't look like a valid email address.",
+          undefined,
+          { kind: "warn" }
+        );
+        return;
+      }
+      emailToSend = e || null;
     }
     setBusy(true);
     try {
-      await signInWithPhone(normalisedMobile, name);
+      await signInWithPhone(normalisedMobile, name, emailToSend);
     } catch (e: any) {
-      Alert.alert("Couldn't sign in", e?.message ?? "Try again.");
+      alert("Couldn't sign in", e?.message ?? "Try again.", undefined, { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -79,7 +112,7 @@ export function LoginScreen() {
     try {
       const res = await signInWithGoogle();
       if (!res.ok && res.reason && res.reason !== "Sign-in cancelled.") {
-        Alert.alert("Google sign-in failed", res.reason);
+        alert("Google sign-in failed", res.reason);
       }
     } finally {
       setBusyGoogle(false);
@@ -173,7 +206,7 @@ export function LoginScreen() {
                 )}
               </TouchableOpacity>
             </>
-          ) : (
+          ) : step === "name" ? (
             <>
               <Text style={s.heading}>Welcome aboard!</Text>
               <Text style={s.sub}>
@@ -203,15 +236,63 @@ export function LoginScreen() {
                   autoComplete="name"
                   autoFocus
                   editable={!busy}
-                  returnKeyType="done"
-                  onSubmitEditing={finishSignup}
+                  returnKeyType="next"
+                  onSubmitEditing={advanceFromName}
                 />
               </View>
 
               <TouchableOpacity
                 style={[s.btn, !fullName.trim() && s.btnDisabled, busy && { opacity: 0.6 }]}
-                onPress={finishSignup}
+                onPress={advanceFromName}
                 disabled={busy || !fullName.trim()}
+                activeOpacity={0.85}
+              >
+                <Text style={s.btnText}>Continue</Text>
+                <Ionicons name="arrow-forward" size={18} color={colors.primaryText} />
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Text style={s.heading}>Stay in the loop</Text>
+              <Text style={s.sub}>
+                Add your email for booking confirmations, trip receipts, and
+                ride-confirmed notifications. You can also skip and add it later.
+              </Text>
+
+              <View style={s.phonePill}>
+                <Ionicons name="call" size={14} color={colors.text} />
+                <Text style={s.phonePillText}>+91 {normalisedMobile}</Text>
+                <TouchableOpacity onPress={() => setStep("phone")} hitSlop={6}>
+                  <Text style={s.phoneEdit}>Change</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={s.label}>Email (optional)</Text>
+              <View style={s.inputRow}>
+                <View style={[s.country, { borderRightWidth: 0, paddingRight: 8 }]}>
+                  <Ionicons name="mail-outline" size={18} color={colors.text} />
+                </View>
+                <TextInput
+                  style={s.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  placeholder="you@example.com"
+                  placeholderTextColor={colors.mute}
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoFocus
+                  editable={!busy}
+                  returnKeyType="done"
+                  onSubmitEditing={() => finishSignup({ withEmail: true })}
+                />
+              </View>
+
+              <TouchableOpacity
+                style={[s.btn, busy && { opacity: 0.6 }]}
+                onPress={() => finishSignup({ withEmail: true })}
+                disabled={busy}
                 activeOpacity={0.85}
               >
                 {busy ? (
@@ -222,6 +303,15 @@ export function LoginScreen() {
                     <Ionicons name="checkmark" size={18} color={colors.primaryText} />
                   </>
                 )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={s.skipBtn}
+                onPress={() => finishSignup({ withEmail: false })}
+                disabled={busy}
+                activeOpacity={0.7}
+              >
+                <Text style={s.skipBtnText}>Skip for now</Text>
               </TouchableOpacity>
             </>
           )}
@@ -369,6 +459,15 @@ const s = StyleSheet.create({
   },
   btnDisabled: { backgroundColor: "#9CA3AF" },
   btnText: { color: colors.primaryText, fontSize: 16, fontWeight: "700", letterSpacing: -0.2 },
+
+  skipBtn: {
+    marginTop: spacing(3),
+    alignSelf: "center",
+    paddingHorizontal: 22,
+    paddingVertical: 12,
+    borderRadius: radii.pill
+  },
+  skipBtnText: { color: colors.soft, fontSize: 14, fontWeight: "700" },
 
   orRow: {
     flexDirection: "row",

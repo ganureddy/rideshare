@@ -30,10 +30,10 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
-  Alert,
   ScrollView
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import * as Location from "expo-location";
 import { useRoute, RouteProp, useNavigation } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -396,14 +396,14 @@ export function TrackingScreen() {
         const result = await Location.requestForegroundPermissionsAsync();
         permissionStatus = result.status;
       } catch {
-        Alert.alert(
+        alert(
           "Location unavailable",
           "We couldn't ask your phone for location access. Trip tracking will still show driver updates from the network."
         );
         return;
       }
       if (permissionStatus !== "granted") {
-        Alert.alert(
+        alert(
           "Location required",
           role === "driver"
             ? "Enable location to share your position with passengers."
@@ -519,14 +519,14 @@ export function TrackingScreen() {
       await call("rideshare.api.tracking.start_trip", { ride: params.rideId });
       setTripStatus("InProgress");
     } catch (e: any) {
-      Alert.alert("Couldn't start", e?.message ?? "Try again.");
+      alert("Couldn't start", e?.message ?? "Try again.");
     } finally {
       setBusy(false);
     }
   }
 
   async function completeTrip() {
-    Alert.alert("Complete trip?", "This will release payment after the cooldown.", [
+    alert("Complete trip?", "This will release payment after the cooldown.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Complete",
@@ -540,7 +540,7 @@ export function TrackingScreen() {
             setTripStatus("Completed");
             nav.goBack();
           } catch (e: any) {
-            Alert.alert("Couldn't complete", e?.message ?? "Try again.");
+            alert("Couldn't complete", e?.message ?? "Try again.");
           } finally {
             setBusy(false);
           }

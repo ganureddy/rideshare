@@ -6,13 +6,13 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
-  Alert,
   Linking,
   Image,
   Modal
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -142,7 +142,7 @@ export function RideDetailScreen() {
       });
       setSummary(s);
     } catch (e: any) {
-      Alert.alert("Could not load ride", e.message);
+      alert("Could not load ride", e.message);
     }
   }
 
@@ -218,102 +218,70 @@ export function RideDetailScreen() {
   // the booking is Confirmed.
 
   /**
-   * Tapping "Book a seat" opens a 3-option dialog:
-   *   • Pay now      → goes through Razorpay checkout
-   *   • Pay later    → reserves the seat now, pays the driver in cash
-   *   • Cancel       → back out
+   * Book-a-seat flow (deferred-payment, v2).
    *
-   * Pay later just calls create_booking with pay_later=1; backend skips
-   * the gateway round-trip entirely.  The seat is held, the driver-side
-   * confirm flow runs unchanged, and the rider can still upgrade to
-   * online payment from the booking detail screen later.
+   * Tapping "Book a seat" used to surface a 3-option alert (Pay now /
+   * Pay later / Cancel) and ran the user straight into Razorpay before
+   * the driver had even seen the request.  That introduced friction
+   * for a flow where most non-instant rides need driver approval
+   * anyway, and meant a refund was always involved when the driver
+   * declined.
+   *
+   * New behaviour:
+   *   1. Tap "Book a seat" → ``create_booking(defer=1)`` lands the
+   *      booking as Pending + Unpaid, with no gateway round-trip.
+   *   2. The driver gets a push + email and confirms (or declines) in
+   *      RideBookings.  Instant-booking rides skip step 2 — the
+   *      backend auto-promotes them to Confirmed + Unpaid.
+   *   3. The rider's RideDetail screen now shows a "Pay now" CTA
+   *      whenever payment_status === "Unpaid" (already wired in the
+   *      cta state machine below); tapping it opens the Razorpay
+   *      WebView via ``setCheckoutBooking``.
    */
   function book() {
     if (!summary) return;
     if (busy) return;
-    Alert.alert(
-      "How would you like to pay?",
-      "Pay online securely with UPI / Card / Netbanking, or pay the driver in cash at pickup.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Pay later (cash)", onPress: () => doBook(true) },
-        { text: "Pay now", onPress: () => doBook(false), style: "default" }
-      ]
-    );
+    doBook();
   }
 
-  async function doBook(payLater: boolean) {
+  async function doBook() {
     if (!summary) return;
     if (busy) return;
     setBusy(true);
     try {
       const order = await call<{
         booking?: string;
-        amount?: number;
-        currency?: string;
-        gateway?: string;
-        order_id?: string;
-        is_demo?: boolean;
-        key_id?: string;
-        pay_later?: boolean;
         booking_status?: string;
+        payment_status?: string;
+        deferred?: boolean;
       }>("rideshare.api.bookings.create_booking", {
         ride: params.rideId,
         seats: 1,
-        pay_later: payLater ? 1 : 0
+        defer: 1
       });
 
       if (!order || !order.booking) {
-        Alert.alert(
+        alert(
           "Booking failed",
-          "The server didn't return a booking reference. Try again in a moment."
+          "The server didn't return a booking reference. Try again in a moment.",
+          undefined,
+          { kind: "error" }
         );
         return;
       }
 
-      // Pay-later path — backend already promoted the booking to
-      // Pending (or Confirmed if instant_booking was on).  No
-      // gateway round-trip, no checkout WebView.
-      if (payLater || order.pay_later) {
-        const confirmed = order.booking_status === "Confirmed";
-        Alert.alert(
-          confirmed ? "Booked!" : "Request sent!",
-          confirmed
-            ? "Your seat is held. Pay the driver at pickup. Open chat to coordinate."
-            : "Your seat is held while the driver reviews. We'll alert you once they confirm. Pay the driver at pickup."
-        );
-        try { await load(); } catch {/* ignore */}
-        return;
-      }
-
-      // Pay-now path #1: DEMO gateway → auto-confirm with stub values.
-      if (order.is_demo) {
-        try {
-          await call("rideshare.api.bookings.confirm_payment", {
-            booking: order.booking,
-            gateway_order_id: order.order_id,
-            gateway_payment_id: `demo_${Date.now()}`,
-            gateway_signature: "demo"
-          });
-        } catch (confirmErr: any) {
-          Alert.alert(
-            "Payment confirmation failed",
-            confirmErr?.message ?? "Your booking was created but payment couldn't be confirmed."
-          );
-          try { await load(); } catch {/* ignore */}
-          return;
-        }
-        Alert.alert("Booked!", "We'll alert you when the driver confirms.");
-        try { await load(); } catch {/* ignore */}
-        return;
-      }
-
-      // Pay-now path #2: Razorpay → open the modal with the booking's
-      // order id.  The user pays inside the WebView; on success we
-      // call confirm_payment which verifies the signature server-side.
-      setCheckoutBooking(order.booking);
+      const confirmed = order.booking_status === "Confirmed";
+      alert(
+        confirmed ? "Seat locked in!" : "Request sent!",
+        confirmed
+          ? "Instant booking accepted. You can pay now to lock the price, or pay later — your seat is held either way."
+          : "We've sent your request to the driver. We'll notify you once they confirm — then you can pay to lock the price.",
+        undefined,
+        { kind: "success" }
+      );
+      try { await load(); } catch {/* ignore */}
     } catch (e: any) {
-      Alert.alert("Booking failed", e?.message ?? "Try again.");
+      alert("Booking failed", e?.message ?? "Try again.", undefined, { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -328,14 +296,14 @@ export function RideDetailScreen() {
       );
       nav.navigate("ChatThread" as any, { threadId: res.thread });
     } catch (e: any) {
-      Alert.alert("Couldn't open chat", e?.message ?? "Try again.");
+      alert("Couldn't open chat", e?.message ?? "Try again.");
     }
   }
 
   function cancelBooking() {
     if (!summary?.my_booking) return;
     const isPending = summary.my_booking.status === "Pending";
-    Alert.alert(
+    alert(
       isPending ? "Cancel this booking?" : "Cancel your booking?",
       isPending
         ? "The driver hasn't confirmed yet — you'll get a 100% refund."
@@ -355,7 +323,7 @@ export function RideDetailScreen() {
                 booking: summary.my_booking!.name
               });
               const pct = res?.refund_percentage ?? 0;
-              Alert.alert(
+              alert(
                 "Booking cancelled",
                 pct >= 100
                   ? "You'll be refunded in full."
@@ -365,7 +333,7 @@ export function RideDetailScreen() {
               );
               await load();
             } catch (e: any) {
-              Alert.alert("Couldn't cancel", e?.message ?? "Try again.");
+              alert("Couldn't cancel", e?.message ?? "Try again.");
             } finally {
               setCancelling(false);
             }
@@ -378,7 +346,7 @@ export function RideDetailScreen() {
   function callNumber(number?: string | null) {
     if (!number) return;
     Linking.openURL(`tel:${number}`).catch(() =>
-      Alert.alert("Couldn't open dialler", number || "")
+      alert("Couldn't open dialler", number || "")
     );
   }
 
@@ -409,10 +377,16 @@ export function RideDetailScreen() {
   const myBookingStatus = summary.my_booking?.status;
   const myPaymentStatus = summary.my_booking?.payment_status;
   const isPending = myBookingStatus === "Pending";
-  // Booking exists, but payment hasn't been made AND wasn't deferred to
-  // cash — most commonly the user opened Razorpay then dismissed it.
-  // Surface a recovery CTA that re-launches the checkout WebView.
-  const isUnpaid = isPending && myPaymentStatus === "Unpaid";
+  const isConfirmed = myBookingStatus === "Confirmed";
+  // "Pay now" surfaces in two cases now that the booking flow is
+  // deferred-payment by default:
+  //   1. Pending + Unpaid — rider booked, driver hasn't confirmed yet
+  //      but the rider wants to lock the price upfront.
+  //   2. Confirmed + Unpaid — driver just confirmed; THIS is the main
+  //      path in the new flow.
+  // Cash bookings stay on the cash track and never see "Pay now".
+  const isUnpaid =
+    (isPending || isConfirmed) && myPaymentStatus === "Unpaid";
   const isDriver = !!summary.am_i_driver;
 
   let cta: {
@@ -432,7 +406,7 @@ export function RideDetailScreen() {
   } else if (alreadyBooked) {
     if (isUnpaid) {
       cta = {
-        label: "Pay now",
+        label: isConfirmed ? "Pay now to lock your seat" : "Pay now",
         icon: "card",
         action: () => setCheckoutBooking(summary.my_booking!.name)
       };
@@ -839,10 +813,10 @@ export function RideDetailScreen() {
               gateway_payment_id: payload.razorpay_payment_id,
               gateway_signature: payload.razorpay_signature
             });
-            Alert.alert("Booked!", "We'll alert you when the driver confirms.");
+            alert("Booked!", "We'll alert you when the driver confirms.");
             try { await load(); } catch {/* ignore */}
           } catch (e: any) {
-            Alert.alert(
+            alert(
               "Payment confirmation failed",
               e?.message ?? "We couldn't verify the payment signature. If money was deducted, our webhook will reconcile within a minute."
             );
@@ -852,7 +826,7 @@ export function RideDetailScreen() {
         onFailure={(reason) => {
           setCheckoutBooking(null);
           if (reason && reason !== "user_cancelled" && reason !== "modal_dismissed") {
-            Alert.alert("Payment failed", reason);
+            alert("Payment failed", reason);
           }
         }}
       />

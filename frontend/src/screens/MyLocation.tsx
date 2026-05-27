@@ -19,7 +19,6 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   ScrollView,
   RefreshControl,
   Linking,
@@ -27,6 +26,7 @@ import {
   Platform
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { WebView } from "react-native-webview";
@@ -92,7 +92,7 @@ export function MyLocationScreen() {
   function shareCoords() {
     if (!loc) return;
     const url = opencageUrl(loc.lat, loc.lng, "<your-key>");
-    Alert.alert(
+    alert(
       "Coordinates",
       `${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)}\n\nOpenCage URL pattern:\n${url}`
     );
@@ -160,7 +160,7 @@ export function MyLocationScreen() {
         title: live ? "My live location" : "My current location"
       });
     } catch {
-      Alert.alert(
+      alert(
         "Can't open WhatsApp",
         Platform.OS === "android"
           ? "Install WhatsApp from the Play Store, then try again."

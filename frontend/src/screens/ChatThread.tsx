@@ -25,12 +25,12 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   Linking,
   AppState,
   AppStateStatus
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation, useRoute, RouteProp, useFocusEffect } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
@@ -360,7 +360,7 @@ export function ChatThreadScreen() {
       // Roll the optimistic message back and put the draft back into the box.
       setItems((cur) => cur.filter((m) => m.name !== optimistic.name));
       setDraft(body);
-      Alert.alert("Couldn't send", e?.message ?? "Try again.");
+      alert("Couldn't send", e?.message ?? "Try again.");
     } finally {
       setSending(false);
     }
@@ -393,7 +393,7 @@ export function ChatThreadScreen() {
       });
     } catch (e: any) {
       setItems((cur) => cur.filter((m) => m.name !== optimistic.name));
-      Alert.alert("Couldn't send", e?.message ?? "Try again.");
+      alert("Couldn't send", e?.message ?? "Try again.");
     } finally {
       setSending(false);
     }

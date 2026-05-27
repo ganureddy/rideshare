@@ -11,6 +11,7 @@ type Profile = {
   full_name?: string;
   first_name?: string;
   email?: string;
+  has_real_email?: boolean;
   mobile_no?: string;
   user_image?: string | null;
   roles?: string[];
@@ -26,7 +27,11 @@ type AuthState = {
   profile: Profile | null;
   /** Quick check: does a User already exist for this phone? */
   checkPhone: (mobile: string) => Promise<{ exists: boolean; socialProvider?: string | null }>;
-  signInWithPhone: (mobile: string, fullName?: string | null) => Promise<{ isNew: boolean }>;
+  signInWithPhone: (
+    mobile: string,
+    fullName?: string | null,
+    email?: string | null
+  ) => Promise<{ isNew: boolean }>;
   signInWithGoogle: () => Promise<{ ok: boolean; reason?: string }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -93,7 +98,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           throw e;
         }
       },
-      async signInWithPhone(mobile, fullName) {
+      async signInWithPhone(mobile, fullName, email) {
         const res = await call<{
           user: string;
           mobile_no: string;
@@ -103,7 +108,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           profile: Profile;
         }>("rideshare.api.auth.login_with_phone", {
           mobile_no: mobile,
-          full_name: fullName
+          full_name: fullName,
+          email
         });
         const next: Credentials = {
           user: res.user,
@@ -126,13 +132,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { isNew: res.is_new };
       },
       async signInWithGoogle() {
+        // Build the deep-link prefix the OAuth callback page should
+        // bounce us back to.  Under a real APK build this resolves to
+        // `rideshare://auth/callback` (the scheme in app.json).  Under
+        // Expo Go it resolves to `exp://<tunnel-host>/--/auth/callback`
+        // — the server hardcoding `rideshare://` would simply hang the
+        // in-app browser in that case, because Expo Go can't catch a
+        // URL whose scheme it doesn't own.  We pass it to the server so
+        // both runtimes work without per-environment forks here.
+        const returnUrl = Linking.createURL("auth/callback");
+
         // 1. Ask the backend for a one-shot Google authorize URL configured
         //    to redirect to our mobile OAuth landing page after success.
         let authorizeUrl: string;
         try {
           const res = await call<{ authorize_url: string }>(
             "rideshare.api.auth.google_login_url",
-            {}
+            { return_to: returnUrl }
           );
           authorizeUrl = res.authorize_url;
         } catch (e: any) {
@@ -148,8 +164,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         // 2. Open the system browser for the OAuth dance and wait for the
-        //    Frappe callback page to deep-link us back via rideshare://.
-        const returnUrl = Linking.createURL("auth/callback");
+        //    Frappe callback page to deep-link us back via the same scheme
+        //    we just handed the server.
         let session: WebBrowser.WebBrowserAuthSessionResult;
         try {
           session = await WebBrowser.openAuthSessionAsync(authorizeUrl, returnUrl);

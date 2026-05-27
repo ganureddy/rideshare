@@ -115,7 +115,7 @@
 
   rs.requireLogin = function () {
     if (frappe.session && frappe.session.user && frappe.session.user !== "Guest") return true;
-    window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = "/rideshare/login?next=" + encodeURIComponent(window.location.pathname + window.location.search);
     return false;
   };
 })();

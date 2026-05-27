@@ -8,8 +8,8 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
-        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+        "RIDESHARE_API_BASE": "https://ride.emrid.store",
+        "RIDESHARE_WS_URL": "https://ride.emrid.store"
       },
       "android": {
         "buildType": "apk",
@@ -23,8 +23,8 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
-        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+        "RIDESHARE_API_BASE": "https://ride.emrid.store",
+        "RIDESHARE_WS_URL": "https://ride.emrid.store"
       },
       "android": {
         "buildType": "apk",
@@ -43,8 +43,8 @@
     },
     "production": {
       "env": {
-        "RIDESHARE_API_BASE": "https://ember.bigdcollections.com",
-        "RIDESHARE_WS_URL": "https://ember.bigdcollections.com"
+        "RIDESHARE_API_BASE": "https://ride.emrid.store",
+        "RIDESHARE_WS_URL": "https://ride.emrid.store"
       },
       "android": {
         "buildType": "app-bundle",

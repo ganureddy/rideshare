@@ -60,9 +60,25 @@ def checkout_context(booking: str) -> dict:
 	b = frappe.get_doc("Booking", booking)
 	if b.passenger != user:
 		frappe.throw(_("Not your booking."), frappe.PermissionError)
-	if b.status not in ("Pending",):
-		# Already confirmed (paid + captured) or cancelled — no checkout
-		# needed.  Return enough info for the client to skip the modal.
+	if b.status not in ("Pending", "Confirmed"):
+		# Cancelled / Completed — no checkout window.
+		return {
+			"already_paid": True,
+			"booking": b.name,
+			"status": b.status,
+			"payment_status": b.payment_status,
+		}
+	if (b.payment_status or "") in ("Held", "Refunded"):
+		# Already paid (Held) or refund issued — no need to pay again.
+		return {
+			"already_paid": True,
+			"booking": b.name,
+			"status": b.status,
+			"payment_status": b.payment_status,
+		}
+	if (b.payment_status or "") == "Cash":
+		# User opted for cash-at-pickup — they're not supposed to pay
+		# online for this booking.  Tell the client to skip the modal.
 		return {
 			"already_paid": True,
 			"booking": b.name,

@@ -79,8 +79,8 @@
       ]
     ],
     "extra": {
-      "apiBaseUrl": "https://ember.bigdcollections.com",
-      "websocketUrl": "https://ember.bigdcollections.com",
+      "apiBaseUrl": "https://ride.emrid.store",
+      "websocketUrl": "https://ride.emrid.store",
       "eas": {
         "projectId": "88cc1bb3-e526-4bbb-927c-364665767bbf"
       }

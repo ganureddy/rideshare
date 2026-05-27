@@ -10,6 +10,7 @@ import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { RootNavigator, RootStackParamList } from "@/navigation/RootNavigator";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AlertHost } from "@/components/AlertHost";
 import {
   attachNotificationHandlers,
   navIntentFor,
@@ -112,6 +113,7 @@ export default function App() {
         <AuthProvider>
           <StatusBar style="dark" backgroundColor="#FFFFFF" />
           <Root />
+          <AlertHost />
         </AuthProvider>
       </SafeAreaProvider>
     </ErrorBoundary>

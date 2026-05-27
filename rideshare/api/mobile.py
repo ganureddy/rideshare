@@ -367,8 +367,14 @@ def my_vehicles_summary() -> dict[str, Any]:
 		fields=["name", "make", "model", "year", "color", "seats_available", "is_verified"],
 		order_by="creation desc",
 	)
-	# Hydrate each vehicle with its photo gallery for the publish wizard
-	# so the user sees previously-uploaded shots without re-attaching.
+	# Hydrate each vehicle with its photo gallery + license plate so the
+	# publish wizard can pre-fill on the next ride.  The plate is stored
+	# as a Password field on Vehicle (encrypted at rest), so we have to
+	# decrypt explicitly — frappe.get_all wouldn't have returned it
+	# anyway.  We only ever surface it back to the row's owner, so the
+	# decrypt is safe.
+	from frappe.utils.password import get_decrypted_password
+
 	for v in vehicles:
 		v["photos"] = [
 			row.photo
@@ -380,6 +386,13 @@ def my_vehicles_summary() -> dict[str, Any]:
 			)
 			if row.photo
 		]
+		try:
+			v["license_plate"] = (
+				get_decrypted_password("Vehicle", v["name"], "license_plate", raise_exception=False)
+				or None
+			)
+		except Exception:
+			v["license_plate"] = None
 	user_image = frappe.db.get_value("User", user, "user_image")
 	driver_profile = frappe.db.get_value(
 		"Driver Profile",
@@ -398,8 +411,20 @@ def my_vehicles_summary() -> dict[str, Any]:
 		],
 		as_dict=True,
 	)
-	if driver_profile and driver_profile.get("license_expiry"):
-		driver_profile["license_expiry"] = driver_profile["license_expiry"].isoformat()
+	if driver_profile:
+		if driver_profile.get("license_expiry"):
+			driver_profile["license_expiry"] = driver_profile["license_expiry"].isoformat()
+		# Same encrypted-Password story as vehicle.license_plate above.
+		try:
+			driver_profile["license_number"] = (
+				get_decrypted_password(
+					"Driver Profile", driver_profile["name"], "license_number",
+					raise_exception=False,
+				)
+				or None
+			)
+		except Exception:
+			driver_profile["license_number"] = None
 	return {
 		"vehicles": vehicles,
 		"driver_profile": driver_profile,

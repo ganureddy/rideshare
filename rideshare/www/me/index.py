@@ -8,7 +8,7 @@ import frappe
 def get_context(context):
 	context.no_cache = 1
 	if frappe.session.user == "Guest":
-		frappe.local.flags.redirect_location = "/login?next=/me"
+		frappe.local.flags.redirect_location = "/rideshare/login?next=/me"
 		raise frappe.Redirect
 
 	user = frappe.get_doc("User", frappe.session.user)

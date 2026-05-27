@@ -9,10 +9,9 @@
 // returns the public file URL ready to drop into a payload.
 
 import * as ImagePicker from "expo-image-picker";
-import { Alert } from "react-native";
 import { ENV } from "@/env";
 import { credentialsStore } from "@/auth/store";
-
+import { alert } from "@/components/AlertHost";
 export type UploadedFile = {
   /** Path on the Frappe server, e.g. "/files/photo.png".  Prepend ENV.apiBaseUrl to make absolute. */
   fileUrl: string;
@@ -45,7 +44,7 @@ export async function pickAndUploadImage(
 ): Promise<UploadedFile | null> {
   const granted = await ensureMediaPermission(opts.source ?? "library");
   if (!granted) {
-    Alert.alert(
+    alert(
       "Permission needed",
       opts.source === "camera"
         ? "Allow camera access to capture a photo."
@@ -77,7 +76,7 @@ export async function pickAndUploadImages(
 ): Promise<UploadedFile[]> {
   const granted = await ensureMediaPermission("library");
   if (!granted) {
-    Alert.alert(
+    alert(
       "Permission needed",
       "Allow access to your photos to attach images."
     );
@@ -99,7 +98,7 @@ export async function pickAndUploadImages(
       const f = await uploadAsset(a, { isPrivate: opts.isPrivate, attachTo: opts.attachTo });
       if (f) out.push(f);
     } catch (e: any) {
-      Alert.alert("Upload failed", e?.message ?? "Try a different photo.");
+      alert("Upload failed", e?.message ?? "Try a different photo.");
     }
   }
   return out;

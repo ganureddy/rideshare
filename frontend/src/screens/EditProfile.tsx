@@ -12,12 +12,12 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAuth } from "@/auth/AuthContext";
@@ -32,6 +32,12 @@ export function EditProfileScreen() {
   const [fullName, setFullName] = useState(profile?.full_name || profile?.first_name || "");
   const [bio, setBio] = useState((profile?.driver_profile as any)?.bio || "");
   const [photoUrl, setPhotoUrl] = useState<string | null>(profile?.user_image || null);
+  // Email is the "deliverable" address — Welcome / booking-confirmed
+  // emails go here.  Phone-only accounts start blank; Google sign-ins
+  // arrive with their Gmail pre-filled.
+  const [email, setEmail] = useState(
+    profile?.has_real_email && profile?.email ? profile.email : ""
+  );
   const [busy, setBusy] = useState(false);
   const [photoBusy, setPhotoBusy] = useState(false);
 
@@ -42,12 +48,15 @@ export function EditProfileScreen() {
         const p = await call<{
           full_name?: string;
           first_name?: string;
+          email?: string;
+          has_real_email?: boolean;
           user_image?: string | null;
           driver_profile?: { bio?: string };
         }>("rideshare.api.auth.whoami");
         if (p?.full_name) setFullName((cur) => cur || p.full_name || "");
         if (p?.user_image && !photoUrl) setPhotoUrl(p.user_image);
         if (p?.driver_profile?.bio && !bio) setBio(p.driver_profile.bio);
+        if (p?.has_real_email && p?.email && !email) setEmail(p.email);
       } catch {/* ignore */}
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,14 +83,14 @@ export function EditProfileScreen() {
       });
       if (f?.fileUrl) setPhotoUrl(f.fileUrl);
     } catch (e: any) {
-      Alert.alert("Couldn't upload", e?.message ?? "Try a different photo.");
+      alert("Couldn't upload", e?.message ?? "Try a different photo.");
     } finally {
       setPhotoBusy(false);
     }
   }
 
   function choosePhotoSource() {
-    Alert.alert("Profile photo", "How would you like to add your photo?", [
+    alert("Profile photo", "How would you like to add your photo?", [
       { text: "Take photo", onPress: () => pickPhoto("camera") },
       { text: "Pick from gallery", onPress: () => pickPhoto("library") },
       ...(photoUrl
@@ -94,7 +103,19 @@ export function EditProfileScreen() {
   async function save() {
     const trimmedName = fullName.trim();
     if (!trimmedName) {
-      Alert.alert("Add a name", "Your name helps drivers and riders recognise you.");
+      alert("Add a name", "Your name helps drivers and riders recognise you.", undefined, {
+        kind: "warn"
+      });
+      return;
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    if (trimmedEmail && !/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(trimmedEmail)) {
+      alert(
+        "Check your email",
+        "That doesn't look like a valid email address.",
+        undefined,
+        { kind: "warn" }
+      );
       return;
     }
     setBusy(true);
@@ -104,16 +125,20 @@ export function EditProfileScreen() {
       // belongs to the driver flow only.
       const payload: Record<string, string> = { full_name: trimmedName };
       if (isDriver) payload.bio = bio.trim();
-      // user_image: pass the value (string or empty) so the backend can
-      // clear it on the way through.  Empty string is valid here.
+      // user_image / email: pass the value (string or empty) so the
+      // backend can clear it on the way through.  Empty string is
+      // valid for both.
       payload.user_image = photoUrl || "";
+      payload.email = trimmedEmail;
 
       await call("rideshare.api.auth.update_profile", payload);
       await refreshProfile();
-      Alert.alert("Saved", "Your profile has been updated.");
+      alert("Saved", "Your profile has been updated.", undefined, {
+        kind: "success"
+      });
       nav.goBack();
     } catch (e: any) {
-      Alert.alert("Couldn't save", e?.message ?? "Try again.");
+      alert("Couldn't save", e?.message ?? "Try again.", undefined, { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -197,6 +222,23 @@ export function EditProfileScreen() {
               autoComplete="name"
               maxLength={120}
             />
+
+            <Text style={[s.label, { marginTop: spacing(3) }]}>Email</Text>
+            <TextInput
+              style={s.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="you@example.com"
+              placeholderTextColor={colors.mute}
+              autoCapitalize="none"
+              autoComplete="email"
+              autoCorrect={false}
+              keyboardType="email-address"
+              maxLength={140}
+            />
+            <Text style={s.hint}>
+              We send booking confirmations and trip receipts here. Leave blank to opt out.
+            </Text>
 
             <Text style={[s.label, { marginTop: spacing(3) }]}>Phone</Text>
             <View style={[s.input, s.readonly]}>

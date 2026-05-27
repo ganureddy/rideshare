@@ -21,7 +21,7 @@
       <div class="rs-nav-spacer"></div>
       <div class="rs-nav-cta">
         {%- if frappe.session.user == "Guest" -%}
-          <a class="rs-btn rs-btn-ghost" href="/login">Login</a>
+          <a class="rs-btn rs-btn-ghost" href="/rideshare/login">Login</a>
           <a class="rs-btn rs-btn-primary" href="/signup">Sign up</a>
         {%- else -%}
           <a class="rs-btn rs-btn-ghost" href="/me">Hi, {{ first_name or "you" }}</a>

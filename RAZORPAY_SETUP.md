@@ -98,7 +98,7 @@ The webhook is the safety net: if the user kills the app mid-checkout, Razorpay'
   ```
    https://<your-site>/api/method/rideshare.api.payments.razorpay_webhook
   ```
-   (Replace `<your-site>` with `ember.bigdcollections.com` or whatever your production hostname is.)
+   (Replace `<your-site>` with `ride.emrid.store` or whatever your production hostname is.)
 3. **Webhook Secret**: generate a long random string locally — e.g.
   ```bash
    openssl rand -hex 32

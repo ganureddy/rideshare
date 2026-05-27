@@ -60,28 +60,33 @@ def create_booking(
 	seats: int = 1,
 	message: str | None = None,
 	pay_later: int | bool = 0,
+	defer: int | bool = 0,
 ) -> dict:
 	"""Reserve seats and (optionally) create a payment order.
 
-	Two flows depending on ``pay_later``:
+	Three flows depending on the payment-mode flags:
 
-	  * **Pay now (default)** — gateway order is created immediately
-	    so the mobile checkout WebView can redeem it.  Booking lands
-	    Pending + Unpaid; payment confirmation flips it to
-	    Confirmed/Held when the rider completes Razorpay checkout.
+	  * **defer=1 (NEW, default in the mobile app since v2)** —
+	    Booking lands Pending + Unpaid.  No gateway order is created.
+	    The driver reviews and (if a non-instant ride) confirms.  Once
+	    confirmed the rider sees a "Pay now" CTA in the app which
+	    calls ``rideshare.api.payments.checkout_context`` to mint the
+	    Razorpay order on demand.  For instant-booking rides we still
+	    flip to Confirmed without payment so the seat is locked in;
+	    the same "Pay now" CTA appears.
 
-	  * **Pay later** — no gateway round-trip.  Booking lands Pending
-	    + ``payment_status="Cash"``.  The driver still needs to
-	    confirm (or, with ``instant_booking=1``, the booking is
-	    auto-confirmed at the seat level — but money never moves
-	    online, so we leave the rider responsible for paying the
-	    driver in cash at pickup).  The rider can ALSO upgrade to
-	    online payment at any time later by calling
-	    ``rideshare.api.payments.checkout_context`` from the booking
-	    detail screen.
+	  * **pay_later=1** — Legacy "pay the driver in cash at pickup".
+	    Booking lands Pending + ``payment_status="Cash"``.  No gateway
+	    round-trip ever.  Still works for sites that want it.
 
-	Both paths are idempotent on (ride, passenger, status=Pending) so
-	a flaky network → tap-Book-twice doesn't double-charge.
+	  * **Pay now (no flags)** — Legacy upfront flow.  Gateway order
+	    is created immediately so the mobile checkout WebView can
+	    redeem it.  Booking lands Pending + Unpaid; payment
+	    confirmation flips it to Confirmed/Held when the rider
+	    completes Razorpay checkout.
+
+	All paths are idempotent on (ride, passenger, status=Pending) so a
+	flaky network → tap-Book-twice doesn't double-charge.
 	"""
 
 	user = frappe.session.user
@@ -89,6 +94,7 @@ def create_booking(
 		frappe.throw(_("Login required."), frappe.PermissionError)
 
 	pay_later_b = bool(int(pay_later or 0))
+	defer_b = bool(int(defer or 0))
 
 	ride_doc = frappe.get_doc("Ride", ride)
 	if ride_doc.status not in ("Published",):
@@ -105,11 +111,15 @@ def create_booking(
 		booking = frappe.get_doc("Booking", existing)
 		booking.seats_booked = int(seats)
 		booking.passenger_message = message or booking.passenger_message
-		# Flip from Cash → Unpaid (or vice versa) if the rider
-		# reconsidered between attempts.  Cash bookings still flip
-		# back to Unpaid the moment they kick off a real Razorpay
-		# checkout.
-		booking.payment_status = "Cash" if pay_later_b else (booking.payment_status or "Unpaid")
+		# Flip Cash ↔ Unpaid if the rider reconsidered between attempts.
+		# Cash bookings flip back to Unpaid the moment they kick off a
+		# real Razorpay checkout.
+		if pay_later_b:
+			booking.payment_status = "Cash"
+		elif defer_b:
+			booking.payment_status = "Unpaid"
+		else:
+			booking.payment_status = booking.payment_status or "Unpaid"
 		booking.save(ignore_permissions=True)
 	else:
 		booking = frappe.new_doc("Booking")
@@ -122,26 +132,27 @@ def create_booking(
 		booking.flags.ignore_permissions = True
 		booking.insert(ignore_permissions=True)
 
-	# Pay-later: skip the gateway, return early.  The driver-side
-	# confirm flow + the rider-side cancel flow both work unchanged
-	# because they branch on Booking.status, not payment_status.
-	if pay_later_b:
+	# defer=1 OR pay_later=1: skip the gateway, return early.  The
+	# driver-side confirm flow + the rider-side cancel flow both work
+	# unchanged because they branch on Booking.status, not payment_status.
+	if pay_later_b or defer_b:
 		# Auto-promote to Confirmed if the ride has instant_booking
-		# turned on AND we're in Pay Later mode — the seat is held
-		# either way, the driver opted into auto-acceptance, and
-		# making the rider wait for a Confirm tap when there's no
-		# online payment is just friction.
+		# turned on — the seat is held either way, the driver opted
+		# into auto-acceptance, and making the rider wait for a Confirm
+		# tap with no online payment is just friction.  For the new
+		# deferred flow this still lands at Confirmed+Unpaid → rider
+		# sees Pay-Now CTA.
 		if int(ride_doc.instant_booking or 0):
 			booking.status = "Confirmed"
 			booking.save(ignore_permissions=True)
 		# Open the rider/driver chat thread so they can coordinate
-		# pickup details + cash exchange.  Idempotent.
+		# pickup details. Idempotent.
 		try:
 			from rideshare.api.chat import start_booking_chat as _open_chat
 			_open_chat(booking.name)
 		except Exception:
 			frappe.log_error(
-				title="Could not open booking chat for pay-later booking",
+				title="Could not open booking chat for deferred booking",
 				message=frappe.get_traceback(),
 			)
 		_broadcast_booking_change(
@@ -154,7 +165,8 @@ def create_booking(
 			"booking_code": booking.booking_code,
 			"amount": booking.total_amount,
 			"currency": booking.currency or "INR",
-			"pay_later": True,
+			"pay_later": pay_later_b,
+			"deferred": defer_b,
 			"booking_status": booking.status,
 			"payment_status": booking.payment_status,
 		}
@@ -637,14 +649,25 @@ def _broadcast_booking_change(
 	  * ``room=ride:<ride>`` — anyone watching the live tracking room.
 
 	A best-effort Expo push is sent in parallel so the right party hears
-	about the change even if the app is in the background.
+	about the change even if the app is in the background, plus a
+	transactional email through the ``Rideshare`` Email Account for the
+	moments where a permanent record matters (e.g. driver confirming a
+	seat — the rider often needs the ride details in their inbox).
 	"""
 
 	try:
 		ride = frappe.db.get_value(
 			"Ride",
 			booking_doc.ride,
-			["driver", "instant_booking", "origin_city", "destination_city"],
+			[
+				"driver",
+				"instant_booking",
+				"origin_city",
+				"destination_city",
+				"departure_datetime",
+				"price_per_seat",
+				"currency",
+			],
 			as_dict=True,
 		)
 	except Exception:
@@ -701,6 +724,16 @@ def _broadcast_booking_change(
 		ride_row=ride or {},
 		driver=driver,
 		extra=extra or {},
+	)
+
+	# Transactional email — currently only fires for "confirmed" (driver
+	# accepted the rider's seat).  Pushed onto Frappe's Email Queue so a
+	# slow SMTP doesn't stretch the confirm request.
+	_email_for_booking_event(
+		booking_doc,
+		event=event,
+		ride_row=ride or {},
+		driver=driver,
 	)
 
 
@@ -790,6 +823,398 @@ def _push_for_booking_event(
 				data=data,
 				channel="bookings",
 			)
+
+
+EMAIL_SENDER_NAME = "Rideshare"
+
+
+def _user_real_email(user_id: str | None) -> str | None:
+	"""Resolve a user's deliverable email through the shared auth helper.
+
+	Kept as a thin wrapper so all bookings call-sites read like a local
+	helper while the actual policy (synthetic placeholder filtering,
+	secondary-address column) lives next to the rest of the auth code.
+	"""
+
+	from rideshare.api.auth import get_user_real_email
+
+	return get_user_real_email(user_id)
+
+
+def _email_account_sender() -> str | None:
+	"""Format ``Rideshare <addr>`` from the Email Account row, or None."""
+
+	try:
+		email = frappe.db.get_value(
+			"Email Account",
+			{"name": "Rideshare", "enable_outgoing": 1},
+			"email_id",
+		)
+	except Exception:
+		email = None
+	return f"{EMAIL_SENDER_NAME} <{email}>" if email else None
+
+
+def _format_departure(value) -> str | None:
+	if not value:
+		return None
+	try:
+		return frappe.utils.format_datetime(value, "EEEE, d MMM yyyy · h:mm a")
+	except Exception:
+		return str(value)
+
+
+def _email_for_booking_event(
+	booking_doc,
+	*,
+	event: str,
+	ride_row: dict,
+	driver: str | None,
+) -> None:
+	"""Route booking lifecycle emails through the ``Rideshare`` Email Account.
+
+	Two events trigger mail today:
+
+	  * ``pending_review`` — a rider just booked a non-instant ride;
+	    the driver receives a "you have a new booking request" email.
+	  * ``confirmed`` — the driver accepted the rider's seat; the
+	    rider receives the trip confirmation with a Pay-Now CTA when
+	    the booking is still unpaid.
+
+	Errors are swallowed (logged) — a failed mail must never roll back
+	the seat update that just succeeded.
+	"""
+
+	if event not in ("pending_review", "confirmed"):
+		return
+
+	try:
+		origin = ride_row.get("origin_city") or "Pickup"
+		destination = ride_row.get("destination_city") or "Destination"
+		route = f"{origin} → {destination}"
+		departure_str = _format_departure(ride_row.get("departure_datetime"))
+		seats = int(booking_doc.seats_booked or 0)
+		seat_label = "1 seat" if seats == 1 else f"{seats} seats"
+		amount = booking_doc.total_amount
+		currency = booking_doc.currency or ride_row.get("currency") or "INR"
+		booking_code = booking_doc.booking_code or booking_doc.name
+		passenger_name = (
+			frappe.db.get_value("User", booking_doc.passenger, "full_name") or "Your rider"
+		)
+		driver_name = (
+			(frappe.db.get_value("User", driver, "full_name") if driver else None)
+			or "Your driver"
+		)
+		sender = _email_account_sender()
+
+		if event == "pending_review":
+			# Mirror push: only mail the driver when there's a real
+			# decision to make.  Instant-booking rides skip the
+			# pending_review event entirely upstream, but defend in
+			# depth.
+			if ride_row.get("instant_booking"):
+				return
+			driver_email = _user_real_email(driver)
+			if not driver_email:
+				return
+			html = _render_booking_pending_email(
+				driver_name=driver_name,
+				passenger_name=passenger_name,
+				route=route,
+				departure_str=departure_str,
+				seat_label=seat_label,
+				amount=amount,
+				currency=currency,
+				booking_code=booking_code,
+			)
+			frappe.sendmail(
+				recipients=[driver_email],
+				subject=f"New booking request · {route}",
+				message=html,
+				sender=sender,
+				reference_doctype="Booking",
+				reference_name=booking_doc.name,
+				now=False,
+				delayed=True,
+			)
+			return
+
+		# event == "confirmed"
+		# Mirror push: skip instant-booking confirmations (the rider
+		# just tapped Pay; their UI already shows Confirmed, mailing
+		# them about their own action is noisy).
+		if ride_row.get("instant_booking"):
+			return
+		passenger_email = _user_real_email(booking_doc.passenger)
+		if not passenger_email:
+			return
+
+		# In the new deferred-payment flow the booking is Confirmed by
+		# the driver but still Unpaid — let the rider know they can now
+		# pay.  Older "paid first" bookings will have payment_status =
+		# Held/Cash and skip the CTA.
+		needs_payment = (booking_doc.payment_status or "").lower() == "unpaid"
+		html = _render_booking_confirmed_email(
+			passenger_name=passenger_name,
+			driver_name=driver_name,
+			route=route,
+			departure_str=departure_str,
+			seat_label=seat_label,
+			amount=amount,
+			currency=currency,
+			booking_code=booking_code,
+			needs_payment=needs_payment,
+		)
+		frappe.sendmail(
+			recipients=[passenger_email],
+			subject=f"Your seat on {route} is confirmed",
+			message=html,
+			sender=sender,
+			reference_doctype="Booking",
+			reference_name=booking_doc.name,
+			now=False,
+			delayed=True,
+		)
+	except Exception:
+		frappe.log_error(
+			title=f"Booking email failed ({event})",
+			message=frappe.get_traceback(),
+		)
+
+
+def _email_summary_table(rows: list[tuple[str, str]]) -> str:
+	"""Render the dashed (label, value) summary block used in both emails."""
+
+	parts = []
+	for label, value in rows:
+		if not value:
+			continue
+		parts.append(
+			"<tr>"
+			f"<td style='color:#6b7280;padding:8px 0;font-size:13px;'>{frappe.utils.escape_html(label)}</td>"
+			f"<td style='text-align:right;font-weight:600;padding:8px 0;font-size:13px;color:#111827;'>{value}</td>"
+			"</tr>"
+		)
+	return "".join(parts)
+
+
+def _render_booking_confirmed_email(
+	*,
+	passenger_name: str,
+	driver_name: str,
+	route: str,
+	departure_str: str | None,
+	seat_label: str,
+	amount: float | None,
+	currency: str,
+	booking_code: str,
+	needs_payment: bool = False,
+) -> str:
+	"""Modern, branded HTML email for booking-confirmed.
+
+	Subtle CSS animations on the header (clients that strip <style>
+	fall back to the static gradient).  No external assets — everything
+	inline so Gmail / Apple Mail / Outlook all render the same.
+	"""
+
+	try:
+		amount_str = f"{frappe.utils.escape_html(currency)} {float(amount or 0):,.2f}"
+	except (TypeError, ValueError):
+		amount_str = ""
+
+	rows = _email_summary_table([
+		("Route", frappe.utils.escape_html(route)),
+		("Departure", frappe.utils.escape_html(departure_str or "")),
+		("Seats", frappe.utils.escape_html(seat_label)),
+		("Amount", amount_str),
+		(
+			"Booking code",
+			f"<span style='font-family:monospace;'>{frappe.utils.escape_html(booking_code)}</span>",
+		),
+	])
+
+	cta = ""
+	if needs_payment:
+		cta = """
+        <p style="margin:0 0 18px;color:#0F4FA8;font-size:14px;font-weight:600;">
+          You can pay for your seat now to lock it in.
+        </p>
+        <a href="https://ride.emrid.store/rideshare" style="display:inline-block;background:#10B981;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:700;font-size:14px;">Pay now in the app →</a>
+"""
+	else:
+		cta = """
+        <a href="https://ride.emrid.store/rideshare" style="display:inline-block;background:#1976D2;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:700;font-size:14px;">Open Rideshare →</a>
+"""
+
+	return f"""\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Booking confirmed</title>
+<style>
+  @keyframes rsPulse {{
+    0%, 100% {{ transform: scale(1); }}
+    50%      {{ transform: scale(1.04); }}
+  }}
+  @keyframes rsShimmer {{
+    0%   {{ background-position: 0% 50%; }}
+    50%  {{ background-position: 100% 50%; }}
+    100% {{ background-position: 0% 50%; }}
+  }}
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="display:none;font-size:1px;color:#f4f6fb;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+    {frappe.utils.escape_html(driver_name)} confirmed your seat on {frappe.utils.escape_html(route)}.
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f4f6fb;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="540" style="max-width:540px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e9f2;box-shadow:0 10px 30px rgba(15,23,42,.06);">
+        <tr>
+          <td style="
+              background:linear-gradient(120deg,#10B981 0%,#0EA371 35%,#10B981 65%,#34D399 100%);
+              background-size:200% 200%;
+              animation:rsShimmer 8s ease infinite;
+              padding:36px 32px 32px;text-align:center;color:#ffffff;">
+            <div style="display:inline-block;width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.18);line-height:64px;font-size:30px;animation:rsPulse 2.5s ease-in-out infinite;">✓</div>
+            <div style="margin-top:14px;font-size:13px;letter-spacing:2px;font-weight:700;text-transform:uppercase;opacity:.9;">Seat Confirmed</div>
+            <div style="margin-top:6px;font-size:24px;font-weight:800;letter-spacing:-.4px;">{frappe.utils.escape_html(route)}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:26px 32px 6px;color:#111827;font-size:15px;line-height:1.55;">
+            <p style="margin:0 0 14px;">Hi {frappe.utils.escape_html(passenger_name)},</p>
+            <p style="margin:0 0 14px;">
+              Great news — <strong>{frappe.utils.escape_html(driver_name)}</strong> has accepted
+              your seat. Here are the details so you can plan your trip.
+            </p>
+            <table style="width:100%;border-collapse:collapse;margin-top:14px;background:#f8fafc;border-radius:12px;">
+              <tr><td style="padding:6px 14px;"><table style="width:100%;border-collapse:collapse;">{rows}</table></td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding:24px 32px 32px;">
+            {cta}
+            <p style="margin:18px 0 0;color:#9ca3af;font-size:12px;">
+              Chat with your driver and follow them live in the app.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 32px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;text-align:center;">
+            Booking <span style="font-family:monospace;">{frappe.utils.escape_html(booking_code)}</span> · Rideshare
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
+
+
+def _render_booking_pending_email(
+	*,
+	driver_name: str,
+	passenger_name: str,
+	route: str,
+	departure_str: str | None,
+	seat_label: str,
+	amount: float | None,
+	currency: str,
+	booking_code: str,
+) -> str:
+	"""Driver-facing 'new booking request' email."""
+
+	try:
+		amount_str = f"{frappe.utils.escape_html(currency)} {float(amount or 0):,.2f}"
+	except (TypeError, ValueError):
+		amount_str = ""
+
+	rows = _email_summary_table([
+		("Route", frappe.utils.escape_html(route)),
+		("Departure", frappe.utils.escape_html(departure_str or "")),
+		("Seats requested", frappe.utils.escape_html(seat_label)),
+		("Earnings", amount_str),
+		(
+			"Booking code",
+			f"<span style='font-family:monospace;'>{frappe.utils.escape_html(booking_code)}</span>",
+		),
+	])
+
+	return f"""\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New booking request</title>
+<style>
+  @keyframes rsShimmer {{
+    0%   {{ background-position: 0% 50%; }}
+    50%  {{ background-position: 100% 50%; }}
+    100% {{ background-position: 0% 50%; }}
+  }}
+  @keyframes rsRing {{
+    0%, 90%, 100% {{ transform: rotate(0); }}
+    5%, 15%       {{ transform: rotate(-12deg); }}
+    10%, 20%      {{ transform: rotate(12deg); }}
+  }}
+</style>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="display:none;font-size:1px;color:#f4f6fb;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+    {frappe.utils.escape_html(passenger_name)} wants {frappe.utils.escape_html(seat_label)} on {frappe.utils.escape_html(route)}.
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#f4f6fb;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="540" style="max-width:540px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e9f2;box-shadow:0 10px 30px rgba(15,23,42,.06);">
+        <tr>
+          <td style="
+              background:linear-gradient(120deg,#1976D2 0%,#0F4FA8 35%,#1976D2 65%,#21A0FF 100%);
+              background-size:200% 200%;
+              animation:rsShimmer 8s ease infinite;
+              padding:36px 32px 32px;text-align:center;color:#ffffff;">
+            <div style="display:inline-block;font-size:36px;animation:rsRing 2s ease-in-out infinite;">🔔</div>
+            <div style="margin-top:10px;font-size:13px;letter-spacing:2px;font-weight:700;text-transform:uppercase;opacity:.9;">New Booking Request</div>
+            <div style="margin-top:6px;font-size:24px;font-weight:800;letter-spacing:-.4px;">{frappe.utils.escape_html(route)}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:26px 32px 6px;color:#111827;font-size:15px;line-height:1.55;">
+            <p style="margin:0 0 14px;">Hi {frappe.utils.escape_html(driver_name)},</p>
+            <p style="margin:0 0 14px;">
+              <strong>{frappe.utils.escape_html(passenger_name)}</strong> would like to book
+              <strong>{frappe.utils.escape_html(seat_label)}</strong> on your upcoming ride.
+              Open the app to <strong>confirm</strong> or <strong>decline</strong> the request.
+            </p>
+            <table style="width:100%;border-collapse:collapse;margin-top:14px;background:#f8fafc;border-radius:12px;">
+              <tr><td style="padding:6px 14px;"><table style="width:100%;border-collapse:collapse;">{rows}</table></td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding:24px 32px 8px;">
+            <a href="https://ride.emrid.store/rideshare" style="display:inline-block;background:#1976D2;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:700;font-size:14px;">Review the request →</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:18px 32px 28px;color:#6b7280;font-size:12px;line-height:1.5;text-align:center;">
+            Riders see the trip confirmed only after you accept. They'll be charged after confirmation.
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:14px 32px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;text-align:center;">
+            Booking <span style="font-family:monospace;">{frappe.utils.escape_html(booking_code)}</span> · Rideshare
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
 
 
 def _last_cancelled_by(booking_name: str) -> str | None:

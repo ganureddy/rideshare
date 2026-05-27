@@ -10,7 +10,7 @@ import frappe
 def get_context(context):
 	context.no_cache = 1
 	if frappe.session.user == "Guest":
-		frappe.local.flags.redirect_location = "/login?next=/publish"
+		frappe.local.flags.redirect_location = "/rideshare/login?next=/publish"
 		raise frappe.Redirect
 
 	# If they don't have a Driver Profile yet, send them to onboarding.

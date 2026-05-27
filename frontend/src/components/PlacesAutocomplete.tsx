@@ -15,10 +15,10 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
-  Pressable,
-  Alert
+  Pressable
 } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
+import { alert } from "@/components/AlertHost";
 import * as Location from "expo-location";
 import { call } from "@/api/client";
 import { colors, radii, spacing } from "@/theme";
@@ -126,7 +126,7 @@ export function PlacesAutocomplete({
       setText(p.description);
       onChange(place);
     } catch (e: any) {
-      Alert.alert("Couldn't load place", e?.message ?? "Try again.");
+      alert("Couldn't load place", e?.message ?? "Try again.");
     } finally {
       setResolving(false);
     }
@@ -136,7 +136,7 @@ export function PlacesAutocomplete({
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
-        Alert.alert("Permission needed", "Enable location to use this option.");
+        alert("Permission needed", "Enable location to use this option.");
         return;
       }
       setResolving(true);
@@ -163,7 +163,7 @@ export function PlacesAutocomplete({
       onChange(place);
       setOpen(false);
     } catch (e: any) {
-      Alert.alert("Couldn't get location", e?.message ?? "Try again.");
+      alert("Couldn't get location", e?.message ?? "Try again.");
     } finally {
       setResolving(false);
     }

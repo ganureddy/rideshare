@@ -13,10 +13,10 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  TextInput,
-  Alert
+  TextInput
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
@@ -63,11 +63,11 @@ export function SearchScreen() {
 
   function onSearch() {
     if (!origin || !destination) {
-      Alert.alert("Pick endpoints", "Select a starting and a destination city.");
+      alert("Pick endpoints", "Select a starting and a destination city.");
       return;
     }
     if (origin.id === destination.id) {
-      Alert.alert("Same city", "Origin and destination can't be the same.");
+      alert("Same city", "Origin and destination can't be the same.");
       return;
     }
     const maxPrice = Number(maxPriceText);

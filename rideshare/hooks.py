@@ -34,13 +34,13 @@ web_include_js = "/assets/rideshare/js/rideshare.js"
 website_route_rules = [
 	{"from_route": "/rides/<ride_name>", "to_route": "rides/ride"},
 	{"from_route": "/u/<username>", "to_route": "u/profile"},
-	# Public Rideshare-branded login alias — user-facing URL the mobile app
-	# and marketing material can deep-link to (e.g. /rideshare/login?next=/me).
-	{"from_route": "/rideshare/login", "to_route": "login"},
+	# Rideshare end-user (phone-number) login lives at /rideshare/login —
+	# backed directly by www/rideshare/login.{html,py}. Frappe's standard
+	# email/password backend login stays on /login.
 	{"from_route": "/rideshare/signup", "to_route": "signup"},
-	# Mobile-only WebView entry points: the OAuth landing page and the
-	# Jinja realtime chat.  Both ship under www/rideshare/m/ — the rules
-	# below give them clean URLs.
+	# Mobile-only WebView entry points: the OAuth landing page, the deep-link
+	# login, the Jinja realtime chat, and checkout. They ship under
+	# www/rideshare/m/ — the rules below give them clean URLs.
 	{"from_route": "/rideshare/m/oauth-callback", "to_route": "rideshare/m/oauth_callback"},
 	{"from_route": "/rideshare/m/chat", "to_route": "rideshare/m/chat"},
 	{"from_route": "/rideshare/m/checkout", "to_route": "rideshare/m/checkout"},
@@ -72,7 +72,14 @@ before_uninstall = "rideshare.install.before_uninstall"
 # the doctype controller class).
 # ---------------------------------------------------------------------------
 doc_events: dict = {
-	# Filled in later phases.  Phase 1 has no triggers yet.
+	# Every Website User created via any path (phone signup, Google
+	# OAuth, Apple, an admin manually adding one) gets the Rider role
+	# so they can immediately call the Rideshare API.  Phone signup
+	# also adds the role inline, so this hook is just the backstop
+	# for OAuth-created users.
+	"User": {
+		"after_insert": "rideshare.api.auth.ensure_rider_role",
+	},
 }
 
 # ---------------------------------------------------------------------------

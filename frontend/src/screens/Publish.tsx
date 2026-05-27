@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  Alert,
   ActivityIndicator,
   Switch,
   Image,
@@ -14,6 +13,7 @@ import {
   Platform
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { alert } from "@/components/AlertHost";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -51,12 +51,14 @@ type ExistingVehicle = {
   color?: string;
   seats_available?: number;
   photos?: string[];
+  license_plate?: string | null;
 };
 
 type ExistingDriverProfile = {
   name?: string;
   full_name?: string;
   bio?: string;
+  license_number?: string | null;
   license_expiry?: string | null;
   preferences_music?: "Quiet" | "Some" | "Loud";
   preferences_chat?: "Quiet" | "Some" | "Chatty";
@@ -190,6 +192,9 @@ export function PublishScreen() {
       if (!carYear && v.year) setCarYear(String(v.year));
       if (!carColor) setCarColor(v.color || "");
       if (v.seats_available) setCarSeats(Math.min(12, Math.max(1, v.seats_available)));
+      // License plate is decrypted server-side and returned only to
+      // the row owner — see mobile.my_vehicles_summary.
+      if (!carPlate && v.license_plate) setCarPlate(v.license_plate);
       if (carPhotos.length === 0 && Array.isArray(v.photos) && v.photos.length > 0) {
         setCarPhotos(v.photos.slice(0, MAX_CAR_PHOTOS));
       }
@@ -201,6 +206,7 @@ export function PublishScreen() {
     if (dp) {
       if (!driverName) setDriverName(dp.full_name || profile?.full_name || "");
       if (!driverBio) setDriverBio(dp.bio || "");
+      if (!licenseNumber && dp.license_number) setLicenseNumber(dp.license_number);
       if (dp.license_expiry && !licenseExpiry) {
         const d = new Date(dp.license_expiry);
         if (!isNaN(d.getTime())) setLicenseExpiry(d);
@@ -241,14 +247,14 @@ export function PublishScreen() {
       });
       if (f?.fileUrl) setDriverPhoto(f.fileUrl);
     } catch (e: any) {
-      Alert.alert("Couldn't upload", e?.message ?? "Try a different photo.");
+      alert("Couldn't upload", e?.message ?? "Try a different photo.");
     } finally {
       setDriverPhotoBusy(false);
     }
   }
 
   function chooseDriverPhotoSource() {
-    Alert.alert("Driver portrait", "How would you like to add your photo?", [
+    alert("Driver portrait", "How would you like to add your photo?", [
       { text: "Take photo", onPress: () => pickDriverPhoto("camera") },
       { text: "Pick from gallery", onPress: () => pickDriverPhoto("library") },
       ...(driverPhoto
@@ -261,7 +267,7 @@ export function PublishScreen() {
   async function addCarPhotos() {
     const room = MAX_CAR_PHOTOS - carPhotos.length;
     if (room <= 0) {
-      Alert.alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
+      alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
       return;
     }
     setCarPhotosBusy(true);
@@ -276,7 +282,7 @@ export function PublishScreen() {
 
   async function takeCarPhoto() {
     if (carPhotos.length >= MAX_CAR_PHOTOS) {
-      Alert.alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
+      alert("Limit reached", `You can attach up to ${MAX_CAR_PHOTOS} car photos.`);
       return;
     }
     setCarPhotosBusy(true);
@@ -288,7 +294,7 @@ export function PublishScreen() {
       });
       if (f?.fileUrl) setCarPhotos((prev) => [...prev, f.fileUrl].slice(0, MAX_CAR_PHOTOS));
     } catch (e: any) {
-      Alert.alert("Couldn't upload", e?.message ?? "Try a different photo.");
+      alert("Couldn't upload", e?.message ?? "Try a different photo.");
     } finally {
       setCarPhotosBusy(false);
     }
@@ -334,7 +340,7 @@ export function PublishScreen() {
       });
       await loadDriverState();
     } catch (e: any) {
-      Alert.alert("Couldn't enrol you", e?.message ?? "Try again.");
+      alert("Couldn't enrol you", e?.message ?? "Try again.");
     } finally {
       setEnrolling(false);
     }
@@ -369,7 +375,7 @@ export function PublishScreen() {
   function next() {
     const problem = validateStep(step);
     if (problem) {
-      Alert.alert("Almost there", problem);
+      alert("Almost there", problem);
       return;
     }
     if (step === "trip") gotoStep("car");
@@ -389,7 +395,7 @@ export function PublishScreen() {
     for (const s of ["trip", "car", "driver"] as Step[]) {
       const problem = validateStep(s);
       if (problem) {
-        Alert.alert("Almost there", problem);
+        alert("Almost there", problem);
         gotoStep(s);
         return;
       }
@@ -436,7 +442,7 @@ export function PublishScreen() {
         }
       };
       await call("rideshare.api.rides.publish_ride", { payload: JSON.stringify(payload) });
-      Alert.alert("Ride published 🎉", "Passengers can now find and book it.");
+      alert("Ride published 🎉", "Passengers can now find and book it.");
       // Reset only the trip fields; keep car/driver/preferences populated.
       setOrigin(null);
       setDestination(null);
@@ -448,7 +454,7 @@ export function PublishScreen() {
       setStep("trip");
       nav.navigate("Tabs" as any);
     } catch (e: any) {
-      Alert.alert("Couldn't publish", e?.message ?? "Try again.");
+      alert("Couldn't publish", e?.message ?? "Try again.");
     } finally {
       setBusy(false);
     }

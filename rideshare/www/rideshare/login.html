@@ -1,139 +1,66 @@
-{% extends "templates/web.html" %}
+{%- extends "rideshare/templates/rs_base.html" -%}
+{%- block rs_body -%}
+<div class="rs-container" style="max-width:440px;">
+  <div class="rs-card" style="margin-top:48px;">
+    <div class="rs-card-h" style="flex-direction:column; align-items:flex-start;">
+      <h2 style="margin:0; font-weight:800; letter-spacing:-0.02em;">What's your number?</h2>
+      <p style="color:var(--rs-text-soft); margin:6px 0 0;">
+        Sign in or create a Rideshare account using your mobile number.
+      </p>
+    </div>
 
-{% block title %}Rideshare — Log in{% endblock %}
-
-{% block head_include %}
-<style>
-  :root {
-    --rs-blue: #00aff5;
-    --rs-blue-dk: #008fcb;
-    --rs-text: #1a1a1a;
-    --rs-soft: #6b7280;
-    --rs-bg: #f6f9fc;
-    --rs-border: #e5e7eb;
-  }
-  body { background: var(--rs-bg); }
-  .rs-shell {
-    max-width: 420px;
-    margin: 56px auto;
-    padding: 32px 24px;
-    background: #fff;
-    border-radius: 16px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.06);
-  }
-  .rs-logo {
-    font-size: 28px;
-    font-weight: 700;
-    color: var(--rs-blue);
-    margin: 0 0 4px;
-  }
-  .rs-sub { color: var(--rs-soft); margin: 0 0 24px; }
-  .rs-label { display: block; font-size: 13px; color: var(--rs-soft); margin: 14px 0 6px; }
-  .rs-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 12px 14px;
-    border: 1px solid var(--rs-border);
-    border-radius: 10px;
-    font-size: 16px;
-  }
-  .rs-input:focus { outline: none; border-color: var(--rs-blue); box-shadow: 0 0 0 3px rgba(0,175,245,0.15); }
-  .rs-btn {
-    width: 100%;
-    padding: 14px;
-    background: var(--rs-blue);
-    color: #fff;
-    border: 0;
-    border-radius: 10px;
-    font-size: 16px;
-    font-weight: 600;
-    margin-top: 18px;
-    cursor: pointer;
-  }
-  .rs-btn:hover { background: var(--rs-blue-dk); }
-  .rs-msg { margin-top: 14px; font-size: 14px; }
-  .rs-msg.err { color: #b91c1c; }
-  .rs-msg.ok { color: #047857; }
-  .rs-cta {
-    display: block;
-    text-align: center;
-    margin-top: 18px;
-    color: var(--rs-blue);
-    text-decoration: none;
-    font-weight: 600;
-  }
-  .rs-foot { font-size: 12px; color: var(--rs-soft); text-align: center; margin-top: 24px; }
-</style>
-{% endblock %}
-
-{% block page_content %}
-<div class="rs-shell">
-  <h1 class="rs-logo">Rideshare</h1>
-  <p class="rs-sub">Log in with your phone number — no password.</p>
-
-  {% if is_authenticated %}
-    <p class="rs-msg ok">Signed in as <strong>{{ user }}</strong>.</p>
-    <a class="rs-cta" id="open-app" href="rideshare://auth/ok">Open the app →</a>
-    <a class="rs-cta" href="/api/method/rideshare.api.auth.logout">Log out</a>
-  {% else %}
-    <form id="rs-login-form" autocomplete="tel">
-      <label class="rs-label" for="mobile">Mobile number</label>
-      <input class="rs-input" id="mobile" name="mobile" inputmode="tel"
-             placeholder="+91 98765 43210" required>
-      <button class="rs-btn" type="submit">Continue</button>
-      <div class="rs-msg" id="rs-msg"></div>
+    <form id="rs-login-form" autocomplete="off">
+      <div class="rs-field">
+        <label class="rs-label" for="mobile">Mobile number</label>
+        <div style="display:flex; gap:0; border:1.5px solid var(--rs-border-strong); border-radius:10px; overflow:hidden; background:var(--rs-bg-soft);">
+          <div style="display:flex; align-items:center; gap:6px; padding:0 14px; border-right:1px solid var(--rs-border); font-weight:700; color:var(--rs-text);">
+            <span>🇮🇳</span><span>+91</span>
+          </div>
+          <input class="rs-input" id="mobile" name="mobile" inputmode="numeric"
+                 placeholder="98765 43210" required
+                 maxlength="15"
+                 style="border:0; border-radius:0; background:transparent; padding:14px 16px; font-weight:600;">
+        </div>
+      </div>
+      <button class="rs-btn rs-btn-primary rs-btn-block" type="submit" id="rs-submit">Continue →</button>
     </form>
-  {% endif %}
 
-  <p class="rs-foot">By continuing you agree to the Terms &amp; Privacy Policy.</p>
+    <p style="text-align:center; color:var(--rs-text-soft); margin-top:18px; font-size:13px;">
+      No password needed. We use your phone number to sign you in.
+    </p>
+  </div>
+
+  <div style="text-align:center; margin-top:24px; color:var(--rs-text-soft); font-size:13px;">
+    Want a faster booking experience?
+    <a href="#" style="color:var(--rs-text); text-decoration:underline;">Get the app</a>
+  </div>
 </div>
 
 <script>
-(function () {
-  var form = document.getElementById("rs-login-form");
-  if (!form) return;
-  var msg = document.getElementById("rs-msg");
-  var params = new URLSearchParams(window.location.search);
-  var nextUrl = params.get("next") || "/me";
-  var deepLink = params.get("deep_link"); // rideshare://...
-
-  form.addEventListener("submit", function (e) {
+frappe.ready(function () {
+  const form = document.getElementById("rs-login-form");
+  const submit = document.getElementById("rs-submit");
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get("next") || "/me";
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    msg.textContent = "";
-    msg.className = "rs-msg";
-    var mobile = document.getElementById("mobile").value.trim();
-    if (!mobile) return;
-
-    fetch("/api/method/rideshare.api.auth.login_with_phone", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Frappe-CSRF-Token": (window.frappe && frappe.csrf_token) || ""
-      },
-      credentials: "include",
-      body: new URLSearchParams({ mobile_no: mobile }).toString()
-    })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
-      .then(function (res) {
-        if (!res.ok) throw new Error(((res.body || {}).message) || "Login failed");
-        var data = (res.body && res.body.message) || {};
-        msg.textContent = data.is_new ? "Account created — welcome!" : "Logged in.";
-        msg.className = "rs-msg ok";
-        if (deepLink) {
-          var sep = deepLink.indexOf("?") === -1 ? "?" : "&";
-          window.location.href = deepLink + sep
-            + "api_key=" + encodeURIComponent(data.api_key)
-            + "&api_secret=" + encodeURIComponent(data.api_secret)
-            + "&user=" + encodeURIComponent(data.user);
-          return;
-        }
-        setTimeout(function () { window.location.href = nextUrl; }, 400);
-      })
-      .catch(function (err) {
-        msg.textContent = err.message || "Login failed";
-        msg.className = "rs-msg err";
-      });
+    let mobile = document.getElementById("mobile").value.trim().replace(/\D/g, "");
+    if (mobile.length < 10) {
+      rs.toast("Enter a valid 10-digit mobile number", "error");
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = "Signing in…";
+    try {
+      const res = await rs.api("rideshare.api.auth.login_or_signup", { mobile_no: mobile });
+      rs.toast(res.is_new ? "Account created — welcome!" : "Logged in", "success");
+      setTimeout(() => { window.location.href = next; }, 400);
+    } catch (err) {
+      rs.toast(err.message || "Login failed", "error");
+      submit.disabled = false;
+      submit.textContent = "Continue →";
+    }
   });
-})();
+});
 </script>
-{% endblock %}
+{%- endblock -%}
