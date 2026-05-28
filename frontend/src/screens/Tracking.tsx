@@ -38,6 +38,7 @@ import * as Location from "expo-location";
 import { useRoute, RouteProp, useNavigation } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
+import { CarLoader } from "@/components/CarLoader";
 import {
   subscribeToRide,
   RideLocation,
@@ -556,12 +557,9 @@ export function TrackingScreen() {
 
   if (!driverLoc && passengerList.length === 0) {
     return (
-      <View style={[s.shell, { alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator color={colors.text} />
-        <Text style={{ marginTop: 8, color: colors.soft }}>
-          {role === "driver" ? "Locating you…" : "Waiting for driver location…"}
-        </Text>
-      </View>
+      <CarLoader
+        label={role === "driver" ? "Locating you…" : "Waiting for driver…"}
+      />
     );
   }
 

@@ -30,6 +30,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
 import { subscribeToBookings, BookingEvent } from "@/realtime/socket";
+import { CarLoader } from "@/components/CarLoader";
 import { colors, radii, spacing, shadow } from "@/theme";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
 
@@ -242,8 +243,8 @@ export function RideBookingsScreen() {
 
   if (!data) {
     return (
-      <SafeAreaView style={[s.shell, { alignItems: "center", justifyContent: "center" }]} edges={["top"]}>
-        <ActivityIndicator color={colors.text} />
+      <SafeAreaView style={s.shell} edges={["top"]}>
+        <CarLoader label="Loading bookings…" />
       </SafeAreaView>
     );
   }

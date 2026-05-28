@@ -5,14 +5,14 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
-  RefreshControl,
-  ActivityIndicator
+  RefreshControl
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
+import { CarLoader } from "@/components/CarLoader";
 import { colors, radii, spacing, shadow } from "@/theme";
 import { fmtDateTime } from "@/utils/dateUtils";
 import type { RootStackParamList } from "@/navigation/RootNavigator";
@@ -70,9 +70,7 @@ export function ChatListScreen() {
       </View>
 
       {loading ? (
-        <View style={s.center}>
-          <ActivityIndicator color={colors.text} />
-        </View>
+        <CarLoader label="Loading chats…" />
       ) : (
         <FlatList
           data={items}

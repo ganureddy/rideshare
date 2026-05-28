@@ -33,12 +33,21 @@ def suggest_price(
 	max_per_km = float(
 		frappe.db.get_single_value("Rideshare Settings", "max_ride_price_per_km") or 10
 	)
-	suggested = round(distance_km * (min_per_km + max_per_km) / 2)
+	# Suggestion is per-passenger-seat, not total fuel cost.  The raw
+	# distance-rate range from Rideshare Settings models the *trip's*
+	# economic value; what we want to show in Publish is what a single
+	# rider would chip in (BlaBlaCar-style "share the cost").  Halving
+	# the band keeps the per-km settings untouched (used by ops + the
+	# Desk views) while giving drivers a sensible default that doesn't
+	# scare riders away.
+	min_price = round(distance_km * min_per_km / 2)
+	max_price = round(distance_km * max_per_km / 2)
+	suggested = round(distance_km * (min_per_km + max_per_km) / 4)
 	return {
 		"distance_km": round(distance_km, 1),
 		"duration_minutes": duration_minutes,
-		"min_price": round(distance_km * min_per_km),
-		"max_price": round(distance_km * max_per_km),
+		"min_price": int(min_price),
+		"max_price": int(max_price),
 		"suggested_price": int(suggested),
 	}
 

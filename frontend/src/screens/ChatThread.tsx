@@ -29,11 +29,12 @@ import {
   AppState,
   AppStateStatus
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { alert } from "@/components/AlertHost";
 import { useNavigation, useRoute, RouteProp, useFocusEffect } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
+import { CarLoader } from "@/components/CarLoader";
 import { useAuth } from "@/auth/AuthContext";
 import { absoluteFileUrl } from "@/utils/upload";
 import {
@@ -90,6 +91,12 @@ export function ChatThreadScreen() {
   const { params } = useRoute<Route>();
   const nav = useNavigation();
   const { user } = useAuth();
+  // We deliberately don't pass "bottom" into SafeAreaView edges (it
+  // breaks KeyboardAvoidingView's measurement on Android), so apply
+  // the bottom inset manually to the composer.  This is what was
+  // causing the Send button to sit BELOW the gesture-nav bar on
+  // edge-to-edge Android phones.
+  const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput | null>(null);
   const listRef = useRef<FlatList<ServerMessage> | null>(null);
   const lastTypingAt = useRef<number>(0);
@@ -500,9 +507,7 @@ export function ChatThreadScreen() {
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
         {loading ? (
-          <View style={s.center}>
-            <ActivityIndicator color={colors.text} />
-          </View>
+          <CarLoader label="Loading messages…" />
         ) : error ? (
           <View style={s.center}>
             <Ionicons name="warning-outline" size={32} color={colors.warn} />
@@ -551,8 +556,17 @@ export function ChatThreadScreen() {
           }}
         />
 
-        {/* Composer */}
-        <View style={s.composer}>
+        {/* Composer — paddingBottom honours the device's gesture/nav
+            bar inset so the Send button never sits underneath it.
+            When the keyboard opens, Android's adjustResize shrinks
+            the layout and the OS reports insets.bottom as 0, so the
+            input naturally hugs the keyboard. */}
+        <View
+          style={[
+            s.composer,
+            { paddingBottom: 10 + Math.max(insets.bottom, 0) }
+          ]}
+        >
           <View style={s.inputWrap}>
             <TextInput
               ref={(r) => {

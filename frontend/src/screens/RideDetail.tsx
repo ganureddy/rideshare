@@ -10,13 +10,13 @@ import {
   Image,
   Modal
 } from "react-native";
-import { WebView } from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { alert } from "@/components/AlertHost";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { call } from "@/api/client";
+import { CarLoader } from "@/components/CarLoader";
 import { ENV } from "@/env";
 import { subscribeToBookings } from "@/realtime/socket";
 import { absoluteFileUrl } from "@/utils/upload";
@@ -132,8 +132,6 @@ export function RideDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
-  /** When non-null, the Razorpay WebView modal is open for this booking id. */
-  const [checkoutBooking, setCheckoutBooking] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -218,25 +216,17 @@ export function RideDetailScreen() {
   // the booking is Confirmed.
 
   /**
-   * Book-a-seat flow (deferred-payment, v2).
+   * Book-a-seat flow (driver-confirmation only — no payment).
    *
-   * Tapping "Book a seat" used to surface a 3-option alert (Pay now /
-   * Pay later / Cancel) and ran the user straight into Razorpay before
-   * the driver had even seen the request.  That introduced friction
-   * for a flow where most non-instant rides need driver approval
-   * anyway, and meant a refund was always involved when the driver
-   * declined.
-   *
-   * New behaviour:
    *   1. Tap "Book a seat" → ``create_booking(defer=1)`` lands the
-   *      booking as Pending + Unpaid, with no gateway round-trip.
+   *      booking as Pending.  No gateway round-trip, no payment ever.
    *   2. The driver gets a push + email and confirms (or declines) in
    *      RideBookings.  Instant-booking rides skip step 2 — the
-   *      backend auto-promotes them to Confirmed + Unpaid.
-   *   3. The rider's RideDetail screen now shows a "Pay now" CTA
-   *      whenever payment_status === "Unpaid" (already wired in the
-   *      cta state machine below); tapping it opens the Razorpay
-   *      WebView via ``setCheckoutBooking``.
+   *      backend auto-promotes them to Confirmed.
+   *   3. Once confirmed the rider sees "Track ride" — no payment step.
+   *
+   * Payment gateway integration has been removed from the rider's UI;
+   * backend payment endpoints still exist for any future re-enable.
    */
   function book() {
     if (!summary) return;
@@ -252,8 +242,6 @@ export function RideDetailScreen() {
       const order = await call<{
         booking?: string;
         booking_status?: string;
-        payment_status?: string;
-        deferred?: boolean;
       }>("rideshare.api.bookings.create_booking", {
         ride: params.rideId,
         seats: 1,
@@ -272,10 +260,10 @@ export function RideDetailScreen() {
 
       const confirmed = order.booking_status === "Confirmed";
       alert(
-        confirmed ? "Seat locked in!" : "Request sent!",
+        confirmed ? "Seat confirmed!" : "Request sent!",
         confirmed
-          ? "Instant booking accepted. You can pay now to lock the price, or pay later — your seat is held either way."
-          : "We've sent your request to the driver. We'll notify you once they confirm — then you can pay to lock the price.",
+          ? "Instant booking accepted — your seat is locked in. Open chat to coordinate with the driver."
+          : "We've sent your request to the driver. We'll notify you once they confirm your seat.",
         undefined,
         { kind: "success" }
       );
@@ -355,11 +343,7 @@ export function RideDetailScreen() {
   // still owns A* — see Tracking.tsx.
 
   if (!summary) {
-    return (
-      <View style={[s.shell, { alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator color={colors.text} />
-      </View>
-    );
+    return <CarLoader label="Loading ride…" />;
   }
 
   // `driver_display` is optional on the Summary type; defend against
@@ -375,18 +359,7 @@ export function RideDetailScreen() {
 
   const alreadyBooked = !!summary.my_booking && summary.my_booking.status !== "Cancelled";
   const myBookingStatus = summary.my_booking?.status;
-  const myPaymentStatus = summary.my_booking?.payment_status;
   const isPending = myBookingStatus === "Pending";
-  const isConfirmed = myBookingStatus === "Confirmed";
-  // "Pay now" surfaces in two cases now that the booking flow is
-  // deferred-payment by default:
-  //   1. Pending + Unpaid — rider booked, driver hasn't confirmed yet
-  //      but the rider wants to lock the price upfront.
-  //   2. Confirmed + Unpaid — driver just confirmed; THIS is the main
-  //      path in the new flow.
-  // Cash bookings stay on the cash track and never see "Pay now".
-  const isUnpaid =
-    (isPending || isConfirmed) && myPaymentStatus === "Unpaid";
   const isDriver = !!summary.am_i_driver;
 
   let cta: {
@@ -404,13 +377,7 @@ export function RideDetailScreen() {
       action: () => nav.navigate("RideBookings", { rideId: params.rideId })
     };
   } else if (alreadyBooked) {
-    if (isUnpaid) {
-      cta = {
-        label: isConfirmed ? "Pay now to lock your seat" : "Pay now",
-        icon: "card",
-        action: () => setCheckoutBooking(summary.my_booking!.name)
-      };
-    } else if (isPending) {
+    if (isPending) {
       cta = {
         label: "Awaiting driver confirmation",
         icon: "hourglass",
@@ -796,171 +763,11 @@ export function RideDetailScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Razorpay Standard Checkout — opens as a full-screen modal
-          when `book()` lands a non-DEMO order.  The Jinja page does
-          the heavy lifting (Razorpay SDK, UPI/cards/netbanking); on
-          success the WebView postMessages back to this RN host and
-          we call confirm_payment with the verified signature. */}
-      <CheckoutModal
-        bookingId={checkoutBooking}
-        onClose={() => setCheckoutBooking(null)}
-        onSuccess={async (payload) => {
-          setCheckoutBooking(null);
-          try {
-            await call("rideshare.api.bookings.confirm_payment", {
-              booking: payload.booking,
-              gateway_order_id: payload.razorpay_order_id,
-              gateway_payment_id: payload.razorpay_payment_id,
-              gateway_signature: payload.razorpay_signature
-            });
-            alert("Booked!", "We'll alert you when the driver confirms.");
-            try { await load(); } catch {/* ignore */}
-          } catch (e: any) {
-            alert(
-              "Payment confirmation failed",
-              e?.message ?? "We couldn't verify the payment signature. If money was deducted, our webhook will reconcile within a minute."
-            );
-            try { await load(); } catch {/* ignore */}
-          }
-        }}
-        onFailure={(reason) => {
-          setCheckoutBooking(null);
-          if (reason && reason !== "user_cancelled" && reason !== "modal_dismissed") {
-            alert("Payment failed", reason);
-          }
-        }}
-      />
+      {/* Payment gateway removed — bookings go straight from rider
+          → driver review → Confirmed, with no online payment step.
+          The Razorpay WebView shell that used to live here was
+          retired along with the Pay-Now CTA. */}
     </SafeAreaView>
-  );
-}
-
-/**
- * Full-screen modal that hosts the Razorpay Standard Checkout WebView
- * and translates its postMessage events back into RN callbacks.
- *
- * The page itself (`/rideshare/m/checkout?booking=...`) renders inside
- * the WebView; auth comes from the cookie session our login flow set
- * up.  As a defensive belt-and-braces measure we ALSO append the
- * caller's API token to the URL — Frappe accepts either path, and on
- * some Android skins the cookie jar is cleared between WebView
- * instances.
- */
-function CheckoutModal({
-  bookingId,
-  onClose,
-  onSuccess,
-  onFailure
-}: {
-  bookingId: string | null;
-  onClose: () => void;
-  onSuccess: (payload: {
-    booking: string;
-    razorpay_order_id: string;
-    razorpay_payment_id: string;
-    razorpay_signature: string;
-  }) => void;
-  onFailure: (reason: string) => void;
-}) {
-  const [uri, setUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    if (!bookingId) {
-      setUri(null);
-      return;
-    }
-    (async () => {
-      const creds = await credentialsStore.get();
-      const base = ENV.apiBaseUrl.replace(/\/$/, "");
-      const params = new URLSearchParams({ booking: bookingId });
-      // Auth fallback: if the WebView's cookie jar is empty on this
-      // device we fall back to api_key/secret in the URL.  These never
-      // leave the device — the WebView cancels redirects.
-      if (creds?.apiKey && creds?.apiSecret) {
-        params.set("api_key", creds.apiKey);
-        params.set("api_secret", creds.apiSecret);
-      }
-      if (active) {
-        setUri(`${base}/rideshare/m/checkout?${params.toString()}`);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [bookingId]);
-
-  if (!bookingId) return null;
-  return (
-    <Modal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: "#fff" }} edges={["top"]}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-            borderBottomWidth: 1,
-            borderBottomColor: colors.border
-          }}
-        >
-          <TouchableOpacity onPress={() => onFailure("user_cancelled")} hitSlop={12}>
-            <Ionicons name="chevron-back" size={26} color={colors.text} />
-          </TouchableOpacity>
-          <Text
-            style={{
-              flex: 1,
-              textAlign: "center",
-              fontSize: 15,
-              fontWeight: "800",
-              color: colors.text,
-              marginRight: 26
-            }}
-            numberOfLines={1}
-          >
-            Secure payment
-          </Text>
-        </View>
-        {uri ? (
-          <WebView
-            source={{ uri }}
-            originWhitelist={["*"]}
-            javaScriptEnabled
-            domStorageEnabled
-            sharedCookiesEnabled
-            thirdPartyCookiesEnabled
-            startInLoadingState
-            onMessage={(e) => {
-              try {
-                const data = JSON.parse(e.nativeEvent.data || "{}");
-                if (data.type === "payment-success") {
-                  onSuccess({
-                    booking: data.booking,
-                    razorpay_order_id: data.razorpay_order_id,
-                    razorpay_payment_id: data.razorpay_payment_id,
-                    razorpay_signature: data.razorpay_signature
-                  });
-                } else if (data.type === "payment-failed") {
-                  onFailure(data.reason || "payment_failed");
-                } else if (data.type === "payment-cancelled") {
-                  onFailure(data.reason || "user_cancelled");
-                }
-                // payment-ready fires once the page is mounted;
-                // nothing to do.
-              } catch {/* ignore malformed messages */}
-            }}
-            renderLoading={() => (
-              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                <ActivityIndicator color={colors.text} />
-              </View>
-            )}
-          />
-        ) : (
-          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-            <ActivityIndicator color={colors.text} />
-          </View>
-        )}
-      </SafeAreaView>
-    </Modal>
   );
 }
 

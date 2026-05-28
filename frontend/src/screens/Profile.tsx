@@ -22,7 +22,7 @@ import type { RootStackParamList } from "@/navigation/RootNavigator";
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
-const HELPLINE_NUMBER = "+911800123456"; // Public-facing helpline; safe to dial.
+const HELPLINE_NUMBER = "+919567328800"; // Public-facing helpline; safe to dial.
 
 export function ProfileScreen() {
   const nav = useNavigation<Nav>();
